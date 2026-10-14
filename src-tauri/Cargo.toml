@@ -1,0 +1,19 @@
+[package]
+name = "typelet"
+version = "0.1.0"
+description = "A small floating typing practice tool"
+authors = ["Typelet"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+font-kit = "0.14.3"
+typelet-typing = { path = "typing-core" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+default = ["custom-protocol"]
