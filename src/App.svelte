@@ -48,6 +48,7 @@
   let elapsed = 0;
   let pinned = false;
   let composing = false;
+  let surfacePressed = false;
   let input: HTMLTextAreaElement;
   let backButton: HTMLButtonElement;
   let textDisplay: HTMLDivElement;
@@ -88,14 +89,20 @@
     syncSystemLocale();
 
     const stop = () => { focused = false; };
+    const releaseSurface = () => {
+      if (!surfacePressed) return;
+      surfacePressed = false;
+      focusInput();
+    };
     const resume = () => {
       syncSystemTheme();
       syncSystemLocale();
-      if (view === 'practice' && document.activeElement === input) focused = true;
+      if (view === 'practice') focusInput();
     };
     const hidden = () => { if (document.hidden) stop(); else resume(); };
 
     window.addEventListener('blur', stop);
+    window.addEventListener('pointerup', releaseSurface);
     window.addEventListener('focus', resume);
     window.addEventListener('languagechange', syncSystemLocale);
     document.addEventListener('visibilitychange', hidden);
@@ -120,6 +127,7 @@
     return () => {
       if (timer) clearInterval(timer);
       window.removeEventListener('blur', stop);
+      window.removeEventListener('pointerup', releaseSurface);
       window.removeEventListener('focus', resume);
       window.removeEventListener('languagechange', syncSystemLocale);
       document.removeEventListener('visibilitychange', hidden);
@@ -184,6 +192,11 @@
 
   function focusInput() {
     input?.focus({ preventScroll: true });
+  }
+
+  function markSurfacePress(event: PointerEvent) {
+    const origin = event.target as HTMLElement | null;
+    surfacePressed = view === 'practice' && !origin?.closest('select');
   }
 
   function handleFocus() {
@@ -315,7 +328,7 @@
   <title>{t.brand} · {t.subtitle}</title>
 </svelte:head>
 
-<section class="widget" style:--practice-font={fontStack(fontPreference)}>
+<section class="widget" style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
   <header class="global-nav" role="presentation" onmousedown={dragWindow}>
     <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
     <div class="window-actions">

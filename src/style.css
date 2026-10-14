@@ -80,7 +80,7 @@ progress::-moz-progress-bar { background: var(--action); }
 .passage-heading select { max-width: 112px; padding: 4px 9px; color: var(--muted); border: 1px solid var(--field-border); border-radius: 999px; background: var(--tile); font-size: 11px; cursor: pointer; }
 .passage-heading select option { color: var(--ink); background: var(--canvas); }
 .typing-surface { position: relative; display: block; flex: 1; min-height: 0; cursor: text; }
-.target { height: 100%; margin-inline: -3px; padding: 10px 3px; overflow: auto; color: var(--tile-muted); font-family: var(--practice-font); font-size: 18px; font-weight: 400; line-height: 1.9; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.target { height: 100%; margin-inline: -3px; padding: 10px 3px; overflow: auto; color: var(--tile-muted); font-family: var(--practice-font); font-size: 18px; font-weight: 400; line-height: 1.9; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; user-select: none; -webkit-user-select: none; }
 .target span { -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .correct { color: var(--ink); }
 .incorrect { color: var(--error); border-radius: 2px; background: var(--error-fill); box-shadow: inset 1px 0 var(--tile), inset -1px 0 var(--tile); }
