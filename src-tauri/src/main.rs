@@ -1,8 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use typelet_typing::{statistics, update_practice, Practice, Statistics};
 use tauri::Manager;
+use typelet_typing::{statistics, update_practice, Practice, Statistics};
 
+mod agents;
 mod fonts;
 
 #[derive(serde::Serialize)]
@@ -42,7 +43,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             typing_snapshot,
-            fonts::list_system_fonts
+            fonts::list_system_fonts,
+            agents::get_agent_config,
+            agents::set_codex_agent_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running Typelet");

@@ -26,6 +26,7 @@
     done: boolean;
   };
   type Snapshot = { practice: Practice; stats: Statistics };
+  type AgentConfig = { codex: boolean; available: boolean; configPath: string };
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
@@ -62,6 +63,10 @@
   let fontsLoading = false;
   let fontsLoaded = false;
   let fontsFailed = false;
+  let agentConfig: AgentConfig = { codex: false, available: false, configPath: '' };
+  let agentConfigLoaded = false;
+  let agentLoading = false;
+  let agentError = '';
   let stats: Statistics = emptyStatistics;
   let clock = { total: 0, since: null as number | null };
   let requestId = 0;
@@ -79,6 +84,7 @@
   $: filteredFonts = systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase()));
   $: running = view === 'practice' && focused && practice.attempts > 0 && !stats.done;
   $: if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
+  $: if (view === 'settings' && !agentConfigLoaded) void loadAgentConfig();
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -177,6 +183,43 @@
   function selectFont(value: string) {
     fontPreference = value;
     persistFontPreference(value);
+  }
+
+  async function loadAgentConfig() {
+    agentConfigLoaded = true;
+    agentError = '';
+    try {
+      if (isTauri) {
+        agentConfig = await invoke<AgentConfig>('get_agent_config');
+      } else {
+        agentConfig = {
+          codex: localStorage.getItem('typelet.agent.codex') === 'true',
+          available: true,
+          configPath: '',
+        };
+      }
+    } catch (error) {
+      agentError = String(error);
+    }
+  }
+
+  async function toggleCodexAgent() {
+    if (agentLoading) return;
+    agentLoading = true;
+    agentError = '';
+    const enabled = !agentConfig.codex;
+    try {
+      if (isTauri) {
+        agentConfig = await invoke<AgentConfig>('set_codex_agent_enabled', { enabled });
+      } else {
+        localStorage.setItem('typelet.agent.codex', String(enabled));
+        agentConfig = { ...agentConfig, codex: enabled };
+      }
+    } catch (error) {
+      agentError = String(error);
+    } finally {
+      agentLoading = false;
+    }
   }
 
   async function loadFonts() {
@@ -314,6 +357,7 @@
     focused = false;
     view = 'settings';
     if (!fontsLoaded) void loadFonts();
+    if (!agentConfigLoaded) void loadAgentConfig();
     await tick();
     backButton?.focus();
   }
@@ -328,7 +372,7 @@
   <title>{t.brand} · {t.subtitle}</title>
 </svelte:head>
 
-<section class="widget" style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
+<section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
   <header class="global-nav" role="presentation" onmousedown={dragWindow}>
     <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
     <div class="window-actions">
@@ -368,6 +412,19 @@
           <button class:selected={localePreference === 'zh'} aria-pressed={localePreference === 'zh'} onclick={() => persistLocalePreference('zh')}>{t.chinese}</button>
           <button class:selected={localePreference === 'en'} aria-pressed={localePreference === 'en'} onclick={() => persistLocalePreference('en')}>{t.english}</button>
         </div>
+      </section>
+
+      <section class="settings-group agent-settings" aria-label={t.agents}>
+        <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
+        <div class="agent-row">
+          <div class="agent-copy"><strong>{t.codex}</strong><span>{t.codexHint}</span></div>
+          <button class="agent-toggle" class:enabled={agentConfig.codex} aria-pressed={agentConfig.codex} disabled={agentLoading} onclick={toggleCodexAgent}>
+            {agentLoading ? t.saving : agentConfig.codex ? t.enabled : t.disabled}
+          </button>
+        </div>
+        {#if agentConfig.codex}<span class="agent-note">{t.agentTrustHint}</span>{/if}
+        {#if !isTauri}<span class="agent-note">{t.agentPreview}</span>{/if}
+        {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
       </section>
 
       <section class="settings-group font-settings" aria-label={t.font}>

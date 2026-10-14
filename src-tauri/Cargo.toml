@@ -10,6 +10,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 font-kit = "0.14.3"
+dirs = "6"
 typelet-typing = { path = "typing-core" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }

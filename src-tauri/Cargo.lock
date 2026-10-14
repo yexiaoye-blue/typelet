@@ -4043,6 +4043,7 @@ checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 name = "typelet"
 version = "0.1.0"
 dependencies = [
+ "dirs 6.0.0",
  "font-kit",
  "serde",
  "tauri",
