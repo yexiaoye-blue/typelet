@@ -4046,6 +4046,7 @@ dependencies = [
  "dirs 6.0.0",
  "font-kit",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-single-instance",

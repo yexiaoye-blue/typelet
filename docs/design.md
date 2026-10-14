@@ -30,4 +30,4 @@
 
 Rust core 保持为纯函数 crate，与 Tauri 桌面窗口分开测试。窗口由系统 WebView 渲染，跨平台打包配置不等于三个系统都已验证；发布签名、安装包验收、真实中文输入法和不同窗口系统需要分别记录。
 
-当前版本在设置中支持 Codex 任务自动唤起，不读取会话内容。开启时由 Rust 侧在用户主目录的 .codex/config.toml 中维护 Typelet 自己的 UserPromptSubmit 配置块；提交任务时运行 typelet，关闭时只删除这一个标记块，不修改其他 Codex hooks。Codex 可能把新增 hook 标记为未信任并要求用户确认一次，这是 Codex 的安全机制。当前只接入 Codex，其他 Agent 的接入方式仍待设计。单词发音、翻译和内容导入仍待后续实现。
+当前版本在设置中支持 Codex 和 Cursor 任务自动唤起，不读取会话内容。Codex 使用用户主目录的 .codex/config.toml 和 UserPromptSubmit；Cursor 使用 .cursor/hooks.json 和 beforeSubmitPrompt。两者都能在详情页查看 Typelet 添加的配置片段并编辑保存。Codex 可能把新增 hook 标记为未信任并要求用户确认一次，这是 Codex 的安全机制。DeepSeek Harness（dsh）已列在设置中，但其稳定的全局任务 hook 接口仍待确认。单词发音、翻译和内容导入仍待后续实现。

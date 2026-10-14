@@ -8,9 +8,9 @@ Typelet 继续保持小巧的跨平台悬浮打字工具定位：让等待 Agent
 
 在设置中添加配置，让用户选择要响应哪些 Agent，并开启或关闭自动唤起。选中的 Agent 开始运行时，启动或显示 Typelet；应用已经打开时复用现有窗口。
 
-第一版已经完成 Codex：设置页提供 Codex 开关，应用会自动维护 .codex/config.toml 中带有 Typelet 标记的 UserPromptSubmit 配置块。提交 Codex 任务时会运行 typelet，单实例机制负责显示、还原并聚焦已有窗口。关闭开关时只移除 Typelet 自己的配置块，不需要用户手动编辑文件。Codex 首次可能要求确认新增 hook。
+第一版已经完成 Codex 和 Cursor：设置页列出 Codex、Cursor、DeepSeek Harness（dsh）三张卡片。Codex 使用 .codex/config.toml 的 UserPromptSubmit，Cursor 使用 .cursor/hooks.json 的 beforeSubmitPrompt；两者都支持开关、查看和编辑 Typelet 自己的配置片段。提交任务时会运行 typelet，单实例机制负责显示、还原并聚焦已有窗口。Codex 首次可能要求确认新增 hook。
 
-后续继续调研其他 Agent 实际提供的能力，再决定适配方式。公开事件、hooks、官方扩展接口或其他可用机制都属于候选，不假设各家存在统一的 hooks，也不预先承诺支持列表。
+后续继续确认 DeepSeek Harness 的插件或任务事件能力，再决定适配方式。不同 Agent 的 hooks 配置不假设存在统一格式，Typelet 会为每家保留独立的配置适配器。
 
 待确定：
 

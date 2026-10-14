@@ -44,6 +44,12 @@
 - Rust 增加 Codex 配置读写命令：启用时在 [hooks.state] 前插入带 Typelet 标记的 UserPromptSubmit 配置，禁用时按标记删除；重复启用保持幂等，删除只影响 Typelet 自己的配置块。
 - Rust 配置处理单测通过，现有 Codex 配置用 Python tomllib 验证为有效 TOML；本轮尚未在桌面 UI 中点击真实写入开关，也没有生成安装包。
 
+## 2026-10-14 Agent 列表与详情编辑
+
+- 设置页验证了三张 Agent 卡片：Codex、Cursor、DeepSeek Harness（dsh）；Codex 和 Cursor 显示独立事件与配置格式，dsh 显示待确认接入并禁用开关。
+- Codex 和 Cursor 卡片使用 switch，点击配置详情可看到配置文件、事件、格式和 Typelet hook 片段；网页预览详情编辑区可正常打开。
+- Rust 单测覆盖 Codex hook 边界、Cursor JSON 保留其他 hooks、启用和移除 Typelet hook；Rust 测试 3 项通过，前端构建与 Svelte 编译无警告。本轮未重新生成安装包。
+
 ## 验证范围
 
 本轮清理后执行了核心测试、前端静态与编译检查及开发预览请求检查，没有生成新安装包。网页预览验证不能代替各平台桌面窗口、真实中文输入法、多显示器、全屏覆盖和签名安装包的实机验收。

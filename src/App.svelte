@@ -26,7 +26,9 @@
     done: boolean;
   };
   type Snapshot = { practice: Practice; stats: Statistics };
-  type AgentConfig = { codex: boolean; available: boolean; configPath: string };
+  type AgentId = 'codex' | 'cursor' | 'dsh';
+  type AgentSummary = { id: AgentId; name: string; enabled: boolean; supported: boolean; configPath: string; format: string; event: string };
+  type AgentDetail = AgentSummary & { editable: boolean; content: string; note: string };
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
@@ -63,10 +65,15 @@
   let fontsLoading = false;
   let fontsLoaded = false;
   let fontsFailed = false;
-  let agentConfig: AgentConfig = { codex: false, available: false, configPath: '' };
-  let agentConfigLoaded = false;
+  let agents: AgentSummary[] = [];
+  let agentsLoaded = false;
   let agentLoading = false;
   let agentError = '';
+  let selectedAgent: AgentId | null = null;
+  let agentDetail: AgentDetail | null = null;
+  let agentDetailDraft = '';
+  let agentDetailLoading = false;
+  let agentDetailSaving = false;
   let stats: Statistics = emptyStatistics;
   let clock = { total: 0, since: null as number | null };
   let requestId = 0;
@@ -84,7 +91,7 @@
   $: filteredFonts = systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase()));
   $: running = view === 'practice' && focused && practice.attempts > 0 && !stats.done;
   $: if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
-  $: if (view === 'settings' && !agentConfigLoaded) void loadAgentConfig();
+  $: if (view === 'settings' && !agentsLoaded) void loadAgents();
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -185,40 +192,92 @@
     persistFontPreference(value);
   }
 
-  async function loadAgentConfig() {
-    agentConfigLoaded = true;
+  function previewAgents(): AgentSummary[] {
+    return [
+      { id: 'codex', name: 'Codex', enabled: localStorage.getItem('typelet.agent.codex') === 'true', supported: true, configPath: '~/.codex/config.toml', format: 'TOML', event: 'UserPromptSubmit' },
+      { id: 'cursor', name: 'Cursor', enabled: localStorage.getItem('typelet.agent.cursor') === 'true', supported: true, configPath: '~/.cursor/hooks.json', format: 'JSON', event: 'beforeSubmitPrompt' },
+      { id: 'dsh', name: 'DeepSeek Harness (dsh)', enabled: false, supported: false, configPath: '', format: 'Plugin', event: '待确认' },
+    ];
+  }
+
+  async function loadAgents() {
+    agentsLoaded = true;
     agentError = '';
     try {
       if (isTauri) {
-        agentConfig = await invoke<AgentConfig>('get_agent_config');
+        agents = await invoke<AgentSummary[]>('get_agents_config');
       } else {
-        agentConfig = {
-          codex: localStorage.getItem('typelet.agent.codex') === 'true',
-          available: true,
-          configPath: '',
-        };
+        agents = previewAgents();
       }
     } catch (error) {
       agentError = String(error);
     }
   }
 
-  async function toggleCodexAgent() {
+  async function toggleAgent(agent: AgentSummary) {
     if (agentLoading) return;
+    if (!agent.supported) return;
     agentLoading = true;
     agentError = '';
-    const enabled = !agentConfig.codex;
+    const enabled = !agent.enabled;
     try {
       if (isTauri) {
-        agentConfig = await invoke<AgentConfig>('set_codex_agent_enabled', { enabled });
+        agents = await invoke<AgentSummary[]>('set_agent_enabled', { agent: agent.id, enabled });
       } else {
-        localStorage.setItem('typelet.agent.codex', String(enabled));
-        agentConfig = { ...agentConfig, codex: enabled };
+        localStorage.setItem('typelet.agent.' + agent.id, String(enabled));
+        agents = agents.map(item => item.id === agent.id ? { ...item, enabled } : item);
       }
     } catch (error) {
       agentError = String(error);
     } finally {
       agentLoading = false;
+    }
+  }
+
+  async function openAgentDetail(agent: AgentSummary) {
+    selectedAgent = agent.id;
+    agentDetail = null;
+    agentDetailDraft = '';
+    agentDetailLoading = true;
+    agentError = '';
+    try {
+      if (isTauri) {
+        agentDetail = await invoke<AgentDetail>('get_agent_detail', { agent: agent.id });
+      } else {
+        agentDetail = { ...agent, editable: agent.supported, content: agent.supported ? JSON.stringify({ command: 'nohup typelet >/dev/null 2>&1 </dev/null &' }, null, 2) : '', note: agent.supported ? '网页预览只显示模拟配置。' : 'DeepSeek Harness 的接入方式待确认。' };
+      }
+      agentDetailDraft = agentDetail?.content ?? '';
+    } catch (error) {
+      agentError = String(error);
+    } finally {
+      agentDetailLoading = false;
+    }
+  }
+
+  function closeAgentDetail() {
+    selectedAgent = null;
+    agentDetail = null;
+    agentDetailDraft = '';
+    agentError = '';
+  }
+
+  async function saveAgentDetail() {
+    if (!agentDetail || !agentDetail.editable || agentDetailSaving) return;
+    agentDetailSaving = true;
+    agentError = '';
+    try {
+      if (isTauri) {
+        agentDetail = await invoke<AgentDetail>('save_agent_detail', { agent: agentDetail.id, content: agentDetailDraft });
+        agents = await invoke<AgentSummary[]>('get_agents_config');
+      } else {
+        agentDetail = { ...agentDetail, content: agentDetailDraft, enabled: true };
+        agents = agents.map(item => item.id === agentDetail?.id ? { ...item, enabled: true } : item);
+      }
+      agentDetailDraft = agentDetail.content;
+    } catch (error) {
+      agentError = String(error);
+    } finally {
+      agentDetailSaving = false;
     }
   }
 
@@ -357,7 +416,7 @@
     focused = false;
     view = 'settings';
     if (!fontsLoaded) void loadFonts();
-    if (!agentConfigLoaded) void loadAgentConfig();
+    if (!agentsLoaded) void loadAgents();
     await tick();
     backButton?.focus();
   }
@@ -414,18 +473,41 @@
         </div>
       </section>
 
-      <section class="settings-group agent-settings" aria-label={t.agents}>
-        <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
-        <div class="agent-row">
-          <div class="agent-copy"><strong>{t.codex}</strong><span>{t.codexHint}</span></div>
-          <button class="agent-toggle" class:enabled={agentConfig.codex} aria-pressed={agentConfig.codex} disabled={agentLoading} onclick={toggleCodexAgent}>
-            {agentLoading ? t.saving : agentConfig.codex ? t.enabled : t.disabled}
-          </button>
-        </div>
-        {#if agentConfig.codex}<span class="agent-note">{t.agentTrustHint}</span>{/if}
-        {#if !isTauri}<span class="agent-note">{t.agentPreview}</span>{/if}
-        {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
-      </section>
+      {#if selectedAgent}
+        <section class="settings-group agent-detail" aria-label={t.agentDetail}>
+          <div class="detail-heading">
+            <button class="detail-back" aria-label={t.agentBack} onclick={closeAgentDetail}>←</button>
+            <div class="settings-copy"><strong>{agentDetail?.name ?? t.agentLoading}</strong><span>{agentDetail?.event ?? ''}</span></div>
+          </div>
+          {#if agentDetailLoading}
+            <p class="agent-note">{t.agentLoading}</p>
+          {:else if agentDetail}
+            <div class="detail-meta"><span>{t.agentConfigPath}</span><code>{agentDetail.configPath || t.agentUnavailable}</code></div>
+            <div class="detail-meta"><span>{t.agentFormat}</span><code>{agentDetail.format}</code></div>
+            <p class="agent-note">{agentDetail.note}</p>
+            {#if agentDetail.editable}
+              <textarea class="agent-editor" aria-label={t.agentEditor} bind:value={agentDetailDraft} spellcheck="false"></textarea>
+              <div class="detail-actions"><button class="secondary" onclick={closeAgentDetail}>{t.cancel}</button><button class="primary" disabled={agentDetailSaving} onclick={saveAgentDetail}>{agentDetailSaving ? t.saving : t.save}</button></div>
+            {:else}
+              <p class="agent-note">{t.agentUnavailable}</p>
+            {/if}
+          {/if}
+          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
+        </section>
+      {:else}
+        <section class="settings-group agent-settings" aria-label={t.agents}>
+          <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
+          {#each agents as agent}
+            <div class="agent-row" class:unsupported={!agent.supported}>
+              <button class="agent-copy agent-open" aria-label={t.agentDetails + ': ' + agent.name} onclick={() => openAgentDetail(agent)}>
+                <strong>{agent.name}</strong><span>{agent.supported ? agent.event + ' · ' + agent.format : t.agentUnavailable}</span>
+              </button>
+              <button class="agent-switch" class:on={agent.enabled} role="switch" aria-checked={agent.enabled} aria-label={agent.name + ' ' + (agent.enabled ? t.enabled : t.disabled)} disabled={!agent.supported || agentLoading} onclick={() => toggleAgent(agent)}><span></span></button>
+            </div>
+          {/each}
+          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
+        </section>
+      {/if}
 
       <section class="settings-group font-settings" aria-label={t.font}>
         <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>

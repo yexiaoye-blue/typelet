@@ -44,8 +44,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             typing_snapshot,
             fonts::list_system_fonts,
-            agents::get_agent_config,
-            agents::set_codex_agent_enabled
+            agents::get_agents_config,
+            agents::set_agent_enabled,
+            agents::get_agent_detail,
+            agents::save_agent_detail
         ])
         .run(tauri::generate_context!())
         .expect("error while running Typelet");
