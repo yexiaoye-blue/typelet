@@ -4,7 +4,7 @@ A tiny, cross-platform typing companion to keep your fingers moving while AI age
 
 一个小巧的跨平台桌面悬浮打字工具。等待 Agent 完成任务时，随手打一段文字，保持打字的手感。
 
-Typelet 目前处于早期开发阶段，已实现本机文本练习。Agent 自动唤起、单词模式和内容导入是后续计划，尚未实现。
+Typelet 目前处于早期开发阶段，已实现本机文本练习和 Codex 会话自动唤起。单词模式和内容导入是后续计划。
 
 ## 当前功能
 
@@ -15,20 +15,23 @@ Typelet 目前处于早期开发阶段，已实现本机文本练习。Agent 自
 - 练习统计：顶部显示速度、正确率和用时，文字区下方只保留一条细进度条。
 - 外观与界面语言：明暗主题、中英文界面均默认跟随系统，也可手动选择。
 - 字体选择：内置 Noto Sans Mono，可搜索、预览并选择系统已安装的字体。
+- Agent 自动唤起：设置中提供 Codex、Cursor 和 DeepSeek Harness（dsh）三张卡片。Codex 和 Cursor 支持开关、查看和编辑 Typelet 写入的 hook；dsh 已列出，接入协议待确认。
 
 右上角齿轮打开设置，外观、界面语言和字体偏好保存在本机。练习语言在主页面单独选择。离开输入焦点或打开设置会暂停计时，返回后保留当前练习。
 
 练习正文不可选中，在练习区域拖动不会产生文本选区。在练习页内点击标题栏、留白等非输入区域后，焦点会自动回到输入框；从其他应用切回窗口时同样如此，不需要额外点一下才能打字，当前位置标记保持显示。
 
-当前练习不需要账号、模型 API 或网络服务，尚未接入 Agent 事件或 hooks。内置字体及 SIL Open Font License 位于 [public/fonts/](public/fonts/)，中文字符由系统中文字体补足。
+当前练习不需要账号、模型 API 或网络服务。Codex 自动唤起只维护本机 ~/.codex/config.toml，不读取会话内容；内置字体及 SIL Open Font License 位于 [public/fonts/](public/fonts/)，中文字符由系统中文字体补足。
 
 ## 后续计划
 
-- [ ] **Agent 自动唤起**：在设置中选择要响应的 Agent，在其运行时启动或显示 Typelet。支持哪些 Agent，以及通过何种事件、hooks 或其他能力接入，待后续调研。
+- [x] **Codex 自动唤起**：设置中打开 Codex 开关后，提交 Codex 任务时自动显示 Typelet。配置由应用自动维护；Codex 首次可能要求确认新 hook。
+- [x] **Cursor 自动唤起**：设置中打开 Cursor 开关后，通过 beforeSubmitPrompt hook 唤起 Typelet；配置可在详情页查看和编辑。
+- [ ] **DeepSeek Harness（dsh）自动唤起**：已加入设置列表，等待确认稳定的插件或任务 hook 接口。
 - [ ] **句子 / 单词两种模式**：在设置中切换练习模式。单词模式支持打字、发音和翻译显示，交互参考 [Qwerty Learner](https://qwerty.kaiyi.cool/)。发音和翻译来源尚未确定。
 - [ ] **内容导入**：导入自己的句子或词库，用于相应练习模式。文件格式、数据字段和导入流程尚未确定。
 
-这三项是产品方向，不代表当前版本已支持，也没有预先承诺具体接入协议或文件格式。详细范围与待定问题见 [后续规划](docs/roadmap.md)。
+后续方向不代表当前版本全部支持，也没有预先承诺具体接入协议或文件格式。详细范围与待定问题见 [后续规划](docs/roadmap.md)。
 
 ## 技术栈
 
