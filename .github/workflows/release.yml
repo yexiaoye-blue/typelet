@@ -1,20 +1,19 @@
-name: 发布 RPM
+name: Release
 
-# 打 v* 标签时发布正式版；推送到 develop 或手动运行时，更新名为 test 的预发布版本。
+# Push v0.1.0 for a release, or v0.1.0-rc.1 for a prerelease.
+# A manual run builds the RPM and uploads it as an artifact only.
 on:
   push:
-    branches:
-      - develop
     tags:
-      - "v*"
+      - "v*.*.*"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: rpm-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   rpm:
@@ -23,6 +22,10 @@ jobs:
     steps:
       - name: 取出代码
         uses: actions/checkout@v4
+
+      - name: 确认版本号
+        id: version
+        run: bash .github/scripts/release-version.sh
 
       - name: 准备构建缓存
         uses: actions/cache@v4
@@ -58,6 +61,14 @@ jobs:
           if-no-files-found: error
 
       - name: 发布到 GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/publish-rpm.sh
+        if: steps.version.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Typelet ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          generate_release_notes: true
+          body: |
+            Fedora 44 RPM。
+          files: src-tauri/target/release/bundle/rpm/*.rpm
+          fail_on_unmatched_files: true
