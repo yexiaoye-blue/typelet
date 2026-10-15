@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import confetti from 'canvas-confetti';
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -46,6 +47,7 @@
   let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   let view = $state<'practice' | 'settings'>('practice');
   let snapshot = $state<PracticeSnapshot>(emptySnapshot);
+  let libraries = $derived(snapshot.mode === 'sentence' ? catalog.articles : catalog.wordBooks);
   let catalog = $state<ContentCatalogSnapshot>(previewCatalog());
   let draft = $state('');
   let committedDraft = $state('');
@@ -75,6 +77,7 @@
   let agentLoading = $state(false);
   let agentError = $state('');
   let selectedAgent = $state<AgentId | null>(null);
+  let libraryOpen = $state(false);
   let agentDetail = $state<AgentDetail | null>(null);
   let agentDetailDraft = $state('');
   let agentDetailLoading = $state(false);
@@ -96,26 +99,42 @@
   let finishPronunciation: (() => void) | undefined;
   let stats = $derived<Statistics>(snapshot.stats);
   let clock = { total: 0, since: null as number | null };
+  let itemElapsedOrigin = 0;
   let requestId = 0;
 
   let locale = $derived<Locale>(localePreference === 'system' ? systemLocale : localePreference);
   let resolvedTheme = $derived<Theme>(themePreference === 'system' ? systemTheme : themePreference);
   let t = $derived(locale === 'zh' ? zh : en);
+  let builtinLibraries = $derived(libraries.filter((item) => !item.removable));
+  let importedLibraries = $derived(libraries.filter((item) => item.removable));
   let target = $derived(snapshot.target);
   let expected = $derived(characters(snapshot.target));
   let selectedPhonetic = $derived(snapshot.word ? pronunciationPreference === 'uk' ? snapshot.word.ukphone : snapshot.word.usphone : '');
   let selectedPhoneticLabel = $derived(pronunciationPreference === 'uk' ? t.ukPhone : t.usPhone);
   let chapterTotals = $derived(summarizeChapter(Object.values(chapterWords)));
-  let displayCpm = $derived(chapterPaused ? chapterTotals.cpm : stats.cpm);
   let displayAccuracy = $derived(chapterPaused ? chapterTotals.accuracy : stats.accuracy);
-  let displayElapsed = $derived(chapterPaused ? chapterTotals.milliseconds : elapsed);
-  let chapterResultTitle = $derived(locale === 'zh'
-    ? t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterSuffix + t.chapterComplete
-    : t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterComplete);
+  let displayElapsed = $derived(elapsed);
+  let displayWpm = $derived.by(() => {
+    let correct = stats.correct;
+    for (const [index, result] of Object.entries(chapterWords)) {
+      if (Number(index) === snapshot.itemIndex) continue;
+      correct += result.correct;
+    }
+    const cpm = elapsed >= 1000 ? Math.round(correct * 60000 / elapsed) : 0;
+    return Math.round(cpm / 5);
+  });
+  let chapterResultTitle = $derived(snapshot.chapterTitle
+    ? snapshot.chapterTitle + ' · ' + t.chapterComplete
+    : locale === 'zh'
+      ? t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterSuffix + t.chapterComplete
+      : t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterComplete);
+  let chapterResultUnit = $derived(snapshot.mode === 'sentence' ? t.chapterSentences : t.chapterWords);
   let typed = $derived(characters(committedDraft));
   let filteredFonts = $derived(systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase())));
   let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
   let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
+  let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
+  let celebratedChapter = '';
 
   $effect(() => {
     if (typeof document === 'undefined') return;
@@ -127,6 +146,21 @@
   });
   $effect(() => {
     if (view === 'settings' && !agentsLoaded) void loadAgents();
+  });
+  $effect(() => {
+    const finished = view === 'practice' && chapterPaused;
+    if (!finished) {
+      celebratedChapter = '';
+      return;
+    }
+    const key = snapshot.collectionId + ':' + snapshot.chapterIndex;
+    const canvas = celebrationCanvas;
+    if (!canvas || celebratedChapter === key) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    celebratedChapter = key;
+    const burst = confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
+    void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
   });
 
   onMount(() => {
@@ -190,7 +224,7 @@
       if (!running) return;
       const now = performance.now();
       elapsed = clock.total + now - (clock.since ?? now);
-      void refreshCore(committedDraft, elapsed);
+      void refreshCore(committedDraft, itemElapsed());
     };
 
     timer = setInterval(updateClock, 200);
@@ -388,7 +422,7 @@
   type WebProgress = { mode: PracticeMode; sentenceId: string; wordBookId: string; sentenceIndex: number; wordIndex: number };
 
   function defaultWebProgress(): WebProgress {
-    return { mode: 'sentence', sentenceId: 'preview:meditations', wordBookId: 'preview:cet4', sentenceIndex: 0, wordIndex: 0 };
+    return { mode: 'sentence', sentenceId: 'builtin:movie-lines', wordBookId: 'preview:cet4', sentenceIndex: 0, wordIndex: 0 };
   }
 
   function loadWebProgress(): WebProgress {
@@ -457,18 +491,12 @@
     }
     syncChapterSession(next);
     if (!next.stats.done) autoAdvancedKey = '';
-    handleWordCompletion(next);
+    handleItemCompletion(next);
     speakVisibleWord(next);
     if (!isTauri) persistWebProgress(next);
   }
 
   function syncChapterSession(next: PracticeSnapshot) {
-    if (next.mode !== 'word') {
-      chapterKey = '';
-      chapterWords = {};
-      chapterPaused = false;
-      return;
-    }
     const key = next.collectionId + ':' + next.chapterIndex;
     if (key === chapterKey) return;
     chapterKey = key;
@@ -480,14 +508,24 @@
     return clock.since === null ? elapsed : clock.total + performance.now() - clock.since;
   }
 
-  function rememberCompletedWord(next: PracticeSnapshot) {
+  function itemElapsed() {
+    return Math.max(0, currentElapsed() - itemElapsedOrigin);
+  }
+
+  function resetPracticeClock() {
+    clock = { total: 0, since: null };
+    elapsed = 0;
+    itemElapsedOrigin = 0;
+  }
+
+  function rememberCompletedItem(next: PracticeSnapshot) {
     chapterWords = {
       ...chapterWords,
       [next.itemIndex]: {
         attempts: next.practice.attempts,
         correctAttempts: next.practice.correctAttempts,
         correct: next.stats.correct,
-        milliseconds: Math.max(0, Math.round(currentElapsed())),
+        milliseconds: Math.max(0, Math.round(currentElapsed()) - itemElapsedOrigin),
       },
     };
   }
@@ -498,15 +536,19 @@
     spokenState = 'idle';
   }
 
-  function handleWordCompletion(next: PracticeSnapshot) {
-    if (next.mode !== 'word' || !next.word || !next.stats.done) return;
+  function shouldAutoAdvance(next: PracticeSnapshot) {
+    return next.mode === 'sentence' || autoAdvanceWords;
+  }
+
+  function handleItemCompletion(next: PracticeSnapshot) {
+    if (!next.stats.done) return;
     const key = next.collectionId + ':' + next.chapterIndex + ':' + next.itemIndex;
-    rememberCompletedWord(next);
+    rememberCompletedItem(next);
     if (next.isChapterLastItem) {
       chapterPaused = true;
       return;
     }
-    if (!autoAdvanceWords || autoAdvancedKey === key) return;
+    if (!shouldAutoAdvance(next) || autoAdvancedKey === key) return;
     autoAdvancedKey = key;
     void restart(true);
   }
@@ -716,7 +758,7 @@
     draft = value;
     if (!composing) {
       committedDraft = value;
-      void refreshCore(value, elapsed);
+      void refreshCore(value, itemElapsed());
       input?.setSelectionRange(value.length, value.length);
     }
   }
@@ -733,7 +775,7 @@
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     draft = value;
     committedDraft = value;
-    void refreshCore(value, elapsed);
+    void refreshCore(value, itemElapsed());
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -754,20 +796,21 @@
     speakVisibleWord(snapshot, spokenState !== 'started');
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (chapterPaused || (snapshot.mode === 'word' && snapshot.isChapterLastItem && stats.done)) return;
-      if (snapshot.mode === 'word' && autoAdvanceWords && stats.done) return;
-      if (stats.done && !(snapshot.mode === 'word' && snapshot.isLastItem)) void restart(true);
+      if (chapterPaused || (snapshot.isChapterLastItem && stats.done)) return;
+      if (shouldAutoAdvance(snapshot) && stats.done) return;
+      if (stats.done && !snapshot.isLastItem) void restart(true);
     }
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) event.preventDefault();
   }
 
   async function restart(next = false) {
+    const keepChapterClock = !(next && snapshot.isChapterLastItem);
     invalidateCompletion();
     requestId += 1;
-    clock = { total: 0, since: null };
+    if (keepChapterClock) itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
+    else resetPracticeClock();
     composing = false;
     compositionText = '';
-    elapsed = 0;
     draft = '';
     committedDraft = '';
     try {
@@ -782,12 +825,11 @@
     focusInput();
   }
 
-  async function changeMode(event: Event) {
-    const mode = (event.currentTarget as HTMLSelectElement).value as PracticeMode;
+  async function changeMode(mode: PracticeMode) {
+    if (snapshot.mode === mode) return;
     invalidateCompletion();
     requestId += 1;
-    clock = { total: 0, since: null };
-    elapsed = 0;
+    resetPracticeClock();
     try {
       const nextSnapshot = isTauri
         ? await invoke<PracticeSnapshot>('select_practice_mode', { mode })
@@ -801,17 +843,20 @@
     focusInput();
   }
 
-  async function changeCollection(event: Event) {
-    const id = (event.currentTarget as HTMLSelectElement).value;
+  async function changeCollection(id: string) {
     invalidateCompletion();
     requestId += 1;
-    clock = { total: 0, since: null };
-    elapsed = 0;
+    resetPracticeClock();
+    importError = '';
     try {
       const nextSnapshot = isTauri
         ? await invoke<PracticeSnapshot>(snapshot.mode === 'sentence' ? 'select_article' : 'select_word_book', { id })
         : previewSelectCollection(snapshot, id);
       if (isTauri) catalog = await invoke<ContentCatalogSnapshot>('get_content_catalog');
+      else {
+        const key = snapshot.mode === 'sentence' ? 'articles' : 'wordBooks';
+        catalog = { ...catalog, [key]: catalog[key].map(item => ({ ...item, selected: item.id === id })) };
+      }
       applySnapshot(nextSnapshot, true);
     } catch (error) {
       importError = String(error);
@@ -820,13 +865,47 @@
     focusInput();
   }
 
+  async function openLibrary() {
+    importError = '';
+    libraryOpen = true;
+    await tick();
+    settingsPage?.scrollTo(0, 0);
+  }
+
+  function closeLibrary() {
+    libraryOpen = false;
+    void tick().then(() => settingsPage?.scrollTo(0, 0));
+  }
+
+  async function selectLibrary(id: string) {
+    if (id !== snapshot.collectionId) await changeCollection(id);
+    if (!importError) {
+      libraryOpen = false;
+      await tick();
+      settingsPage?.scrollTo(0, 0);
+    }
+  }
+
+  async function removeLibrary(id: string) {
+    if (!confirm(t.removeLibraryConfirm)) return;
+    if (!isTauri) return;
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    try {
+      const next = await invoke<{ catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot }>(snapshot.mode === 'sentence' ? 'remove_article' : 'remove_word_book', { id });
+      catalog = next.catalog;
+      applySnapshot(next.snapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+  }
+
   async function changeChapter(event: Event) {
-    if (snapshot.mode !== 'word') return;
     const chapter = Number((event.currentTarget as HTMLSelectElement).value);
     invalidateCompletion();
     requestId += 1;
-    clock = { total: 0, since: null };
-    elapsed = 0;
+    resetPracticeClock();
     draft = '';
     committedDraft = '';
     try {
@@ -842,13 +921,11 @@
   }
 
   async function retryChapter() {
-    if (snapshot.mode !== 'word') return;
     invalidateCompletion();
     requestId += 1;
-    clock = { total: 0, since: null };
+    resetPracticeClock();
     composing = false;
     compositionText = '';
-    elapsed = 0;
     draft = '';
     committedDraft = '';
     chapterKey = '';
@@ -948,6 +1025,7 @@
 
   async function openSettings() {
     focused = false;
+    libraryOpen = false;
     view = 'settings';
     if (!fontsLoaded) void loadFonts();
     if (!agentsLoaded) void loadAgents();
@@ -956,6 +1034,7 @@
   }
   async function closeSettings() {
     view = 'practice';
+    libraryOpen = false;
     selectedAgent = null;
     agentDetail = null;
     agentDetailDraft = '';
@@ -1010,6 +1089,67 @@
           {/if}
           {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
         </section>
+      {:else if libraryOpen}
+        <div class="settings-heading">
+          <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={closeLibrary}>←</button>
+          <h1>{t.library}</h1>
+        </div>
+        <p class="library-intro">{t.libraryHint}</p>
+        {#if builtinLibraries.length}
+          {#if importedLibraries.length}<h2 class="library-heading">{t.libraryBuiltin}</h2>{/if}
+          <section class="settings-group" aria-label={t.libraryBuiltin}>
+            {#each builtinLibraries as item (item.id)}
+              <div class="library-row">
+                <button class="library-main" onclick={() => selectLibrary(item.id)}>
+                  <strong>{item.title}</strong>
+                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
+                </button>
+                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
+              </div>
+            {/each}
+          </section>
+        {/if}
+        {#if importedLibraries.length}
+          <h2 class="library-heading">{t.libraryImported}</h2>
+          <section class="settings-group" aria-label={t.libraryImported}>
+            {#each importedLibraries as item (item.id)}
+              <div class="library-row">
+                <button class="library-main" onclick={() => selectLibrary(item.id)}>
+                  <strong>{item.title}</strong>
+                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
+                </button>
+                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
+                <button class="library-remove" aria-label={t.removeLibrary + ' ' + item.title} onclick={() => removeLibrary(item.id)}>{t.removeLibrary}</button>
+              </div>
+            {/each}
+          </section>
+        {/if}
+        {#if isTauri}
+          <div class="detail-actions">
+            {#if snapshot.mode === 'sentence'}
+              <button class="secondary" disabled={importLoading} onclick={() => importContent('article')}>{t.importArticle}</button>
+            {:else}
+              <button class="secondary" disabled={importLoading} onclick={() => importContent('wordBook')}>{t.importWordBook}</button>
+            {/if}
+          </div>
+        {:else}
+          <p class="agent-note">{t.previewImportHint}</p>
+        {/if}
+        {#if pendingImport}
+          <div class="import-preview">
+            <strong>{pendingImport.report.title}</strong>
+            <span>{t.importPreview}: {pendingImport.report.count} · {pendingImport.report.firstItem ?? t.missing}</span>
+            {#if pendingImport.kind === 'wordBook'}<span>{t.duplicates}: {pendingImport.report.duplicateCount}</span>{/if}
+            <div class="detail-actions"><button class="secondary" onclick={cancelImport}>{t.cancel}</button><button class="primary" disabled={importLoading} onclick={() => void confirmImport()}>{t.confirmImport}</button></div>
+          </div>
+        {/if}
+        {#if importMessage}<p class="agent-note" role="status">{importMessage}</p>{/if}
+        {#if importError}<p class="agent-error" role="alert">{importError}</p>{/if}
+        {#if snapshot.mode === 'word'}
+          <p class="agent-note">{t.dictionaryNotice}</p>
+        {:else if libraries.find((item) => item.selected)?.source}
+          <p class="agent-note">{libraries.find((item) => item.selected)?.source}</p>
+        {/if}
       {:else}
       <div class="settings-heading">
         <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={closeSettings}>←</button>
@@ -1035,51 +1175,29 @@
       </section>
 
       <section class="settings-group content-settings" aria-label={t.contentSettings}>
-        <div class="settings-copy"><strong>{t.contentSettings}</strong><span>{t.contentHint}</span></div>
-        <select class="font-select" aria-label={t.practiceMode} value={snapshot.mode} onchange={changeMode}>
-          <option value="sentence">{t.sentenceMode}</option>
-          <option value="word">{t.wordMode}</option>
-        </select>
-        <div class="settings-copy pronunciation-setting-copy"><strong>{t.wordPronunciation}</strong><span>{t.wordPronunciationHint}</span></div>
-        <div class="segmented-control two-options">
-          <button class:selected={pronunciationPreference === 'uk'} aria-pressed={pronunciationPreference === 'uk'} onclick={() => persistPronunciationPreference('uk')}>{t.britishPronunciation}</button>
-          <button class:selected={pronunciationPreference === 'us'} aria-pressed={pronunciationPreference === 'us'} onclick={() => persistPronunciationPreference('us')}>{t.americanPronunciation}</button>
+        <div class="settings-copy"><strong>{t.practiceMode}</strong><span>{t.contentHint}</span></div>
+        <div class="segmented-control two-options" role="group" aria-label={t.practiceMode}>
+          <button class:selected={snapshot.mode === 'sentence'} aria-pressed={snapshot.mode === 'sentence'} onclick={() => changeMode('sentence')}>{t.sentenceMode}</button>
+          <button class:selected={snapshot.mode === 'word'} aria-pressed={snapshot.mode === 'word'} onclick={() => changeMode('word')}>{t.wordMode}</button>
         </div>
-        <div class="settings-copy pronunciation-setting-copy"><strong>{t.autoAdvanceWords}</strong><span>{t.autoAdvanceWordsHint}</span></div>
-        <div class="segmented-control two-options">
-          <button class:selected={autoAdvanceWords} aria-pressed={autoAdvanceWords} onclick={() => persistAutoAdvanceWords(true)}>{t.enabled}</button>
-          <button class:selected={!autoAdvanceWords} aria-pressed={!autoAdvanceWords} onclick={() => persistAutoAdvanceWords(false)}>{t.disabled}</button>
-        </div>
-        <select class="font-select" aria-label={t.contentCollection} value={snapshot.collectionId} onchange={changeCollection}>
-          {#if snapshot.mode === 'sentence'}
-            {#each catalog.articles as article}
-              <option value={article.id}>{article.title} · {article.count}</option>
-            {/each}
-          {:else}
-            {#each catalog.wordBooks as wordBook}
-              <option value={wordBook.id}>{wordBook.title} · {wordBook.count}</option>
-            {/each}
-          {/if}
-        </select>
-        {#if isTauri}
-          <div class="detail-actions">
-            <button class="secondary" disabled={importLoading} onclick={() => importContent('article')}>{t.importArticle}</button>
-            <button class="secondary" disabled={importLoading} onclick={() => importContent('wordBook')}>{t.importWordBook}</button>
+        {#if snapshot.mode === 'word'}
+          <div class="setting-block">
+            <div class="settings-copy"><strong>{t.wordPronunciation}</strong><span>{t.wordPronunciationHint}</span></div>
+            <div class="segmented-control two-options" role="group" aria-label={t.wordPronunciation}>
+              <button class:selected={pronunciationPreference === 'uk'} aria-pressed={pronunciationPreference === 'uk'} onclick={() => persistPronunciationPreference('uk')}>{t.britishPronunciation}</button>
+              <button class:selected={pronunciationPreference === 'us'} aria-pressed={pronunciationPreference === 'us'} onclick={() => persistPronunciationPreference('us')}>{t.americanPronunciation}</button>
+            </div>
           </div>
-        {:else}
-          <p class="agent-note">{t.previewImportHint}</p>
-        {/if}
-        {#if pendingImport}
-          <div class="import-preview">
-            <strong>{pendingImport.report.title}</strong>
-            <span>{t.importPreview}: {pendingImport.report.count} · {pendingImport.report.firstItem ?? t.missing}</span>
-            {#if pendingImport.kind === 'wordBook'}<span>{t.duplicates}: {pendingImport.report.duplicateCount}</span>{/if}
-            <div class="detail-actions"><button class="secondary" onclick={cancelImport}>{t.cancel}</button><button class="primary" disabled={importLoading} onclick={() => void confirmImport()}>{t.confirmImport}</button></div>
+          <div class="setting-row">
+            <div class="settings-copy"><strong>{t.autoAdvanceWords}</strong><span>{t.autoAdvanceWordsHint}</span></div>
+            <button class="agent-switch" class:on={autoAdvanceWords} role="switch" aria-checked={autoAdvanceWords} aria-label={t.autoAdvanceWords} onclick={() => persistAutoAdvanceWords(!autoAdvanceWords)}><span></span></button>
           </div>
         {/if}
-        {#if importMessage}<p class="agent-note" role="status">{importMessage}</p>{/if}
-        {#if importError}<p class="agent-error" role="alert">{importError}</p>{/if}
-        <p class="agent-note">{t.dictionaryNotice}</p>
+        <button class="nav-row" onclick={openLibrary}>
+          <strong>{t.library}</strong>
+          <span class="nav-value">{snapshot.collectionTitle}</span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </button>
       </section>
 
         <section class="settings-group agent-settings" aria-label={t.agents}>
@@ -1120,22 +1238,28 @@
     </main>
   {:else}
     <main class="practice-page">
-      <section class="summary" class:chapter-paused={chapterPaused}>
-        <div class="stats">
-          <div><strong>{displayCpm}</strong><span>{t.speed}</span></div>
-          <div><strong>{displayAccuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
-          <div><strong>{formatDuration(displayElapsed)}</strong><span>{t.time}</span></div>
-        </div>
-      </section>
-
       <section class="practice-tile">
         <div class="passage-heading">
-          {#if snapshot.mode === 'word'}
+          {#if !chapterPaused}
+            <div class="practice-controls">
+              <button type="button" class="icon-button" aria-label={t.restart} title={t.restart} onclick={() => void restart()}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6" /><path d="M20 4.5V9h-4.5" /></svg>
+              </button>
+              <button type="button" class="icon-button" aria-label={practicePhase === 'running' ? t.pausePractice : t.startPractice} title={practicePhase === 'running' ? t.pausePractice : t.startPractice} onclick={togglePractice}>
+                {#if practicePhase === 'running'}
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h2.6v12H8zM13.4 6H16v12h-2.6z" /></svg>
+                {:else}
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 6.5v11l10-5.5-10-5.5z" /></svg>
+                {/if}
+              </button>
+            </div>
+          {/if}
+          {#if snapshot.mode === 'word' || snapshot.chapterCount > 1}
             <div class="word-navigation">
               <span class="practice-label">{snapshot.collectionTitle}</span>
-              <select class="chapter-select" aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
+              <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
                 {#each Array.from({ length: snapshot.chapterCount }) as _, index}
-                  <option value={index}>{t.chapterPrefix} {index + 1} {t.chapterSuffix}</option>
+                  <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
                 {/each}
               </select>
               <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
@@ -1147,22 +1271,31 @@
 
 
         <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
-          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:awaiting-start={awaitingStart}>
+          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:with-gloss={snapshot.mode === 'sentence' && snapshot.translation.length > 0} class:awaiting-start={awaitingStart}>
             {#if chapterPaused}
               <div class="chapter-result" role="status">
                 <p class="chapter-result-title">{chapterResultTitle}</p>
-                <p class="chapter-result-count">{chapterTotals.words} {t.chapterWords}</p>
+                <p class="chapter-result-count">{chapterTotals.words} {chapterResultUnit}</p>
+              </div>
+              <div class="chapter-actions">
+                <button class="primary" disabled={snapshot.isLastItem} onclick={() => void continueAfterChapter()}>{snapshot.isLastItem ? t.bookComplete : t.nextChapter}</button>
+                <button class="chapter-retry" onclick={() => void retryChapter()}>{t.retryChapter}</button>
               </div>
             {:else}
-            <div class="word-row">
-              <div class="word-slot">
-                <div bind:this={textDisplay} id="passage-text" class="target" class:word-target={snapshot.mode === 'word'} aria-label={t.target} style:font-size={snapshot.mode === 'word' ? wordFontSize + 'px' : undefined}>
-              {#each expected as char, index}
-                {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
-              {/each}
-              {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
+            <div class="sentence-stack">
+              <div class="word-row">
+                <div class="word-slot">
+                  <div bind:this={textDisplay} id="passage-text" class="target" class:word-target={snapshot.mode === 'word'} aria-label={t.target} style:font-size={snapshot.mode === 'word' ? wordFontSize + 'px' : undefined}>
+                {#each expected as char, index}
+                  {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
+                {/each}
+                {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
+                  </div>
                 </div>
               </div>
+              {#if snapshot.mode === 'sentence' && snapshot.translation}
+                <p class="sentence-gloss">{snapshot.translation}</p>
+              {/if}
             </div>
             {#if awaitingStart}
               <p class="start-hint">{t.pressAnyKey}</p>
@@ -1185,16 +1318,15 @@
           oncompositionend={handleCompositionEnd} oninput={handleInput} onkeydown={handleKeydown}></textarea>
         </label>
       </section>
-      <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' ? snapshot.chapterProgress : stats.percent} max="100"></progress>
-
-      <footer>
-        {#if chapterPaused}
-          <button class="secondary" onclick={() => void retryChapter()}>{t.retryChapter}</button>
-          <button class="primary" disabled={snapshot.isLastItem} onclick={() => void continueAfterChapter()}>{snapshot.isLastItem ? t.bookComplete : t.nextChapter}</button>
-        {:else}
-          <button class="secondary" onclick={() => void restart()}>{t.restart}</button><button class="primary" onclick={togglePractice}>{practicePhase === 'running' ? t.pausePractice : t.startPractice}</button>
-        {/if}
-      </footer>
+      <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' || snapshot.chapterCount > 1 ? snapshot.chapterProgress : stats.percent} max="100"></progress>
+      <section class="summary" class:chapter-paused={chapterPaused}>
+        <div class="stats">
+          <div><strong>{displayWpm}</strong><span>{t.speed}</span></div>
+          <div><strong>{displayAccuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
+          <div><strong>{formatDuration(displayElapsed)}</strong><span>{t.time}</span></div>
+        </div>
+      </section>
     </main>
   {/if}
+  <canvas bind:this={celebrationCanvas} class="celebration" aria-hidden="true"></canvas>
 </section>

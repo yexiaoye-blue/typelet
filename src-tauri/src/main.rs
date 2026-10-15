@@ -27,6 +27,13 @@ struct ImportResult {
     snapshot: PracticeSnapshot,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogUpdate {
+    catalog: ContentCatalogSnapshot,
+    snapshot: PracticeSnapshot,
+}
+
 fn command_error(error: ContentError) -> String {
     error.to_string()
 }
@@ -276,6 +283,36 @@ fn import_word_book(state: State<'_, AppState>, path: String) -> Result<ImportRe
     })
 }
 
+fn remove_collection(state: &AppState, sentence: bool, id: &str) -> Result<CatalogUpdate, String> {
+    let mut catalog = state
+        .content
+        .lock()
+        .map_err(|_| "内容状态锁定失败".to_owned())?;
+    if sentence {
+        catalog.remove_article(id).map_err(command_error)?;
+    } else {
+        catalog.remove_word_book(id).map_err(command_error)?;
+    }
+    let catalog_snapshot = catalog.snapshot();
+    drop(catalog);
+    let current = snapshot(state, 0)?;
+    save_content(state)?;
+    Ok(CatalogUpdate {
+        catalog: catalog_snapshot,
+        snapshot: current,
+    })
+}
+
+#[tauri::command]
+fn remove_article(state: State<'_, AppState>, id: String) -> Result<CatalogUpdate, String> {
+    remove_collection(&state, true, &id)
+}
+
+#[tauri::command]
+fn remove_word_book(state: State<'_, AppState>, id: String) -> Result<CatalogUpdate, String> {
+    remove_collection(&state, false, &id)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -330,6 +367,8 @@ fn main() {
             preview_word_book,
             import_article,
             import_word_book,
+            remove_article,
+            remove_word_book,
             fonts::list_system_fonts,
             agents::get_agents_config,
             agents::set_agent_enabled,

@@ -1,9 +1,10 @@
 import cet4Data from '../../src-tauri/typing-core/data/cet4_3.json';
+import movieLines from '../../src-tauri/typing-core/data/movie_lines.json';
 
 export type Practice = { text: string; attempts: number; correctAttempts: number };
 export type PracticeMode = 'sentence' | 'word';
 export type WordEntry = { name: string; trans: string[]; usphone: string; ukphone: string };
-export type CollectionSummary = { id: string; title: string; count: number; selected: boolean; source: string; chapterCount: number };
+export type CollectionSummary = { id: string; title: string; count: number; selected: boolean; source: string; chapterCount: number; removable: boolean };
 export type ContentCatalogSnapshot = { mode: PracticeMode; articles: CollectionSummary[]; wordBooks: CollectionSummary[] };
 export type PracticeSnapshot = {
   mode: PracticeMode;
@@ -20,6 +21,9 @@ export type PracticeSnapshot = {
   isLastItem: boolean;
   target: string;
   word: WordEntry | null;
+  chapterTitle: string;
+  chapterTitles: string[];
+  translation: string;
   practice: Practice;
   stats: Statistics;
 };
@@ -71,17 +75,83 @@ export function summarizeChapter(results: ChapterWordResult[]): ChapterSummary {
   };
 }
 
-const previewArticles = [
-  { id: 'preview:meditations', title: 'Meditations', source: 'Web preview', sentences: ['You have power over your mind—not outside events.', 'Realize this, and you will find strength.'] },
-  { id: 'preview:alice', title: "Alice's Adventures in Wonderland", source: 'Web preview', sentences: ['Alice was beginning to get very tired.', 'She had nothing to do.'] },
-];
+type MovieLineBook = { title: string; source: string; chapters: { title: string; lines: { en: string; zh: string }[] }[] };
+
+function normalizePracticeText(text: string) {
+  return text
+    .replaceAll('\u2018', "'")
+    .replaceAll('\u2019', "'")
+    .replaceAll('\u2032', "'")
+    .replaceAll('\u201c', '"')
+    .replaceAll('\u201d', '"')
+    .replaceAll('\u2013', '-')
+    .replaceAll('\u2014', '-')
+    .replaceAll('\u2026', '...')
+    .replaceAll('\u00a0', ' ');
+}
+
+function movieArticle(book: MovieLineBook) {
+  const sentences: string[] = [];
+  const translations: string[] = [];
+  const chapterTitles: string[] = [];
+  const chapterEnds: number[] = [];
+  for (const chapter of book.chapters) {
+    const lines = chapter.lines.filter((line) => line.en.trim());
+    if (!lines.length) continue;
+    chapterTitles.push(chapter.title);
+    for (const line of lines) {
+      sentences.push(normalizePracticeText(line.en.trim()));
+      translations.push(line.zh.trim());
+    }
+    chapterEnds.push(sentences.length);
+  }
+  return {
+    id: 'builtin:movie-lines',
+    title: book.title.trim() || '电影台词',
+    source: book.source,
+    sentences,
+    translations,
+    chapterTitles,
+    chapterEnds,
+  };
+}
+
+const previewArticles = [movieArticle(movieLines as MovieLineBook)];
 const previewWords: WordEntry[] = cet4Data as WordEntry[];
 
+function articleChapterCount(article: { chapterEnds: number[] }) {
+  return article.chapterEnds.length || 1;
+}
+
+function sentencePlacement(article: { sentences: string[]; chapterTitles: string[]; chapterEnds: number[] }, index: number) {
+  if (!article.chapterEnds.length) {
+    return { chapterIndex: 1, chapterCount: 1, chapterStart: 0, chapterItemIndex: index + 1, chapterItemCount: article.sentences.length, chapterTitle: '', chapterTitles: [] as string[] };
+  }
+  let start = 0;
+  for (let chapter = 0; chapter < article.chapterEnds.length; chapter += 1) {
+    const end = article.chapterEnds[chapter];
+    if (index < end || chapter === article.chapterEnds.length - 1) {
+      return {
+        chapterIndex: chapter + 1,
+        chapterCount: article.chapterEnds.length,
+        chapterStart: start,
+        chapterItemIndex: index - start + 1,
+        chapterItemCount: Math.max(1, end - start),
+        chapterTitle: article.chapterTitles[chapter] ?? '',
+        chapterTitles: article.chapterTitles,
+      };
+    }
+    start = end;
+  }
+  return { chapterIndex: 1, chapterCount: 1, chapterStart: 0, chapterItemIndex: index + 1, chapterItemCount: article.sentences.length, chapterTitle: '', chapterTitles: article.chapterTitles };
+}
+
 export function previewCatalog(mode: PracticeMode = 'sentence', articleId = previewArticles[0].id, wordBookId = 'preview:cet4'): ContentCatalogSnapshot {
+  const selectedArticle = previewArticles.some((article) => article.id === articleId) ? articleId : previewArticles[0].id;
   return {
     mode,
-    articles: previewArticles.map(article => ({ id: article.id, title: article.title, count: article.sentences.length, selected: article.id === articleId, source: article.source, chapterCount: 1 })),
-    wordBooks: [{ id: wordBookId, title: 'CET4_3 · preview', count: previewWords.length, selected: true, source: 'Web preview data', chapterCount: Math.ceil(previewWords.length / 20) }],
+    articles: previewArticles.map(article => ({ id: article.id, title: article.title, count: article.sentences.length, selected: article.id === selectedArticle, source: article.source, chapterCount: articleChapterCount(article), removable: false })),
+    wordBooks: [{ id: wordBookId, title: 'CET4_3 · preview', count: previewWords.length, selected: true, source: 'Web preview data', chapterCount: Math.ceil(previewWords.length / 20), removable: false }],
   };
 }
 
@@ -91,16 +161,18 @@ export function previewSnapshot(mode: PracticeMode = 'sentence', collectionId = 
   const word = mode === 'word' ? previewWords[index] : null;
   const target = word?.name ?? collection.sentences[index];
   const stats = statistics(practice, target, milliseconds);
-  const chapterCount = mode === 'word' ? Math.max(1, Math.ceil(collection.sentences.length / 20)) : 1;
-  const chapterIndex = mode === 'word' ? Math.floor(index / 20) + 1 : 1;
-  const chapterStart = mode === 'word' ? (chapterIndex - 1) * 20 : 0;
-  const chapterItemCount = mode === 'word' ? Math.min(20, collection.sentences.length - chapterStart) : collection.sentences.length;
-  const chapterItemIndex = mode === 'word' ? index - chapterStart + 1 : index + 1;
-  const completed = mode === 'word' ? chapterItemIndex - 1 + (stats.done ? 1 : 0) : stats.percent;
-  const chapterProgress = mode === 'word' ? Math.min(100, Math.floor(completed / Math.max(1, chapterItemCount) * 100)) : stats.percent;
-  const isChapterLastItem = mode === 'word' ? chapterItemIndex === chapterItemCount : index === collection.sentences.length - 1;
+  const sentence = mode === 'sentence' && 'chapterEnds' in collection ? sentencePlacement(collection, index) : null;
+  const chapterCount = mode === 'word' ? Math.max(1, Math.ceil(collection.sentences.length / 20)) : sentence?.chapterCount ?? 1;
+  const chapterIndex = mode === 'word' ? Math.floor(index / 20) + 1 : sentence?.chapterIndex ?? 1;
+  const chapterStart = mode === 'word' ? (chapterIndex - 1) * 20 : sentence?.chapterStart ?? 0;
+  const chapterItemCount = mode === 'word' ? Math.min(20, collection.sentences.length - chapterStart) : sentence?.chapterItemCount ?? collection.sentences.length;
+  const chapterItemIndex = mode === 'word' ? index - chapterStart + 1 : sentence?.chapterItemIndex ?? index + 1;
+  const useChapterProgress = mode === 'word' || chapterCount > 1;
+  const chapterProgress = useChapterProgress ? Math.min(100, Math.floor((chapterItemIndex - 1 + (stats.done ? 1 : 0)) / Math.max(1, chapterItemCount) * 100)) : stats.percent;
+  const isChapterLastItem = chapterItemIndex === chapterItemCount;
   const isLastItem = index === collection.sentences.length - 1;
-  return { mode, collectionId: collection.id, collectionTitle: collection.title, itemIndex: index + 1, itemCount: collection.sentences.length, chapterIndex, chapterCount, chapterItemIndex, chapterItemCount, chapterProgress, isChapterLastItem, isLastItem, target, word, practice, stats };
+  const translation = mode === 'sentence' && 'translations' in collection ? collection.translations[index] ?? '' : '';
+  return { mode, collectionId: collection.id, collectionTitle: collection.title, itemIndex: index + 1, itemCount: collection.sentences.length, chapterIndex, chapterCount, chapterItemIndex, chapterItemCount, chapterProgress, isChapterLastItem, isLastItem, target, word, chapterTitle: sentence?.chapterTitle ?? '', chapterTitles: sentence?.chapterTitles ?? [], translation, practice, stats };
 }
 
 export function previewUpdate(snapshot: PracticeSnapshot, value: string, milliseconds: number): PracticeSnapshot {
@@ -119,8 +191,14 @@ export function previewAdvance(snapshot: PracticeSnapshot): PracticeSnapshot {
 }
 
 export function previewSelectChapter(snapshot: PracticeSnapshot, chapter: number): PracticeSnapshot {
-  if (snapshot.mode !== 'word') return snapshot;
-  const index = Math.min(chapter * 20, snapshot.itemCount - 1);
+  if (snapshot.mode === 'sentence') {
+    const article = previewArticles.find(item => item.id === snapshot.collectionId) ?? previewArticles[0];
+    if (!article.chapterEnds.length) return chapter === 0 ? previewSnapshot(snapshot.mode, article.id, 0) : snapshot;
+    if (chapter < 0 || chapter >= article.chapterEnds.length) return snapshot;
+    const index = chapter === 0 ? 0 : article.chapterEnds[chapter - 1];
+    return previewSnapshot(snapshot.mode, article.id, index);
+  }
+  const index = Math.min(Math.max(0, chapter) * 20, snapshot.itemCount - 1);
   return previewSnapshot(snapshot.mode, snapshot.collectionId, index);
 }
 
