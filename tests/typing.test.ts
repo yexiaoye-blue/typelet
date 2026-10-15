@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { freshPractice, previewAdvance, previewSnapshot, previewUpdate, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
+import { freshPractice, previewAdvance, previewSelectChapter, previewSnapshot, previewUpdate, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
 test('backspace correction retains earlier mistakes in accuracy', () => {
  let practice = updatePractice(freshPractice(), 'ax', 'abc');
  assert.equal(statistics(practice, 'abc', 1000).accuracy, 50);
@@ -30,6 +30,25 @@ test('web preview uses the same snapshot shape and waits for Enter to advance', 
  assert.equal(complete.stats.done, true);
  assert.equal(complete.itemIndex, 1);
  assert.equal(previewAdvance(complete).itemIndex, 2);
+});
+test('sentence preset groups movie lines into chapters', () => {
+  const first = previewSnapshot();
+  assert.equal(first.collectionId, 'builtin:movie-lines');
+  assert.equal(first.collectionTitle, '电影台词');
+  assert.equal(first.chapterCount, 8);
+  assert.equal(first.itemCount, 79);
+  assert.equal(first.chapterTitle, '乱世佳人');
+  assert.equal(first.chapterItemCount, 11);
+  assert.equal(first.translation, '不管怎样，明天是新的一天!');
+  const typed = previewSnapshot('sentence', 'builtin:movie-lines', 3);
+  assert.equal(typed.target.includes("it's"), true);
+  assert.equal(typed.target.includes('\u2019'), false);
+  assert.equal(typed.target.includes('\u2014'), false);
+  const nextMovie = previewSelectChapter(first, 1);
+  assert.equal(nextMovie.chapterIndex, 2);
+  assert.equal(nextMovie.chapterTitle, '怦然心动');
+  assert.equal(nextMovie.chapterItemIndex, 1);
+  assert.equal(nextMovie.itemIndex, 12);
 });
 test('web preview keeps word metadata in the Rust-compatible snapshot shape', () => {
  const initial = previewSnapshot('word', 'preview:cet4');

@@ -67,6 +67,15 @@ pub struct Article {
     pub source: String,
     /// Sentence units in their original order.
     pub sentences: Vec<String>,
+    /// Chinese glosses aligned with `sentences`. Empty when the article has none.
+    #[serde(default)]
+    pub translations: Vec<String>,
+    /// Chapter titles. Empty means one untitled chapter containing every sentence.
+    #[serde(default)]
+    pub chapter_titles: Vec<String>,
+    /// Exclusive sentence indexes where each chapter ends.
+    #[serde(default)]
+    pub chapter_ends: Vec<usize>,
 }
 
 /// One flat word record used by the practice UI.
@@ -111,8 +120,10 @@ pub struct CollectionSummary {
     pub selected: bool,
     /// Source note for the collection.
     pub source: String,
-    /// Number of fixed-size chapters in the collection.
+    /// Number of chapters in the collection.
     pub chapter_count: usize,
+    /// Whether the user can remove this collection. Built-in collections cannot be removed.
+    pub removable: bool,
 }
 
 /// Content selectors and available collection summaries.
@@ -159,6 +170,12 @@ pub struct PracticeSnapshot {
     pub target: String,
     /// Word metadata when the current mode is word.
     pub word: Option<WordEntry>,
+    /// Title of the current chapter. Empty when chapters are only numbered.
+    pub chapter_title: String,
+    /// Every chapter title. Empty when the collection uses numbered chapters.
+    pub chapter_titles: Vec<String>,
+    /// Gloss shown under the current sentence. Empty for words and plain articles.
+    pub translation: String,
     /// Current typing counters.
     pub practice: Practice,
     /// Current typing statistics.
@@ -239,8 +256,12 @@ pub enum ContentError {
     EndOfCollection,
     /// The embedded word book cannot be decoded.
     BuiltinWordBook(String),
+    /// The embedded sentence collection cannot be decoded.
+    BuiltinArticle(String),
     /// Persistent content could not be read or written.
     Storage(String),
+    /// A built-in collection cannot be removed.
+    NotRemovable,
 }
 
 impl Display for ContentError {
@@ -260,7 +281,9 @@ impl Display for ContentError {
             }
             Self::EndOfCollection => formatter.write_str("本词书已完成"),
             Self::BuiltinWordBook(reason) => write!(formatter, "内置词书无法读取：{reason}"),
+            Self::BuiltinArticle(reason) => write!(formatter, "内置文章无法读取：{reason}"),
             Self::Storage(reason) => write!(formatter, "内容保存失败：{reason}"),
+            Self::NotRemovable => formatter.write_str("预置词本不能移除"),
         }
     }
 }
@@ -347,6 +370,9 @@ pub fn parse_article(title: &str, source: &str, text: &str) -> Result<Article, C
         title: title.trim().to_owned(),
         source: source.to_owned(),
         sentences,
+        translations: Vec::new(),
+        chapter_titles: Vec::new(),
+        chapter_ends: Vec::new(),
     })
 }
 
@@ -467,7 +493,7 @@ pub struct ContentCatalog {
 impl ContentCatalog {
     /// Create a catalog containing the built-in public-domain excerpts and CET4 book.
     pub fn new() -> Result<Self, ContentError> {
-        let builtin_articles = builtin_articles();
+        let builtin_articles = builtin_articles()?;
         let builtin_word_book = builtin_word_book()?;
         let article_id = builtin_articles
             .first()
@@ -521,26 +547,19 @@ impl ContentCatalog {
         let articles = self
             .builtin_articles
             .iter()
-            .chain(self.articles.iter())
-            .map(|article| CollectionSummary {
-                id: article.id.clone(),
-                title: article.title.clone(),
-                count: article.sentences.len(),
-                selected: self.article_id == article.id,
-                source: article.source.clone(),
-                chapter_count: chapter_count(article.sentences.len()),
-            })
+            .map(|article| self.article_summary(article, false))
+            .chain(
+                self.articles
+                    .iter()
+                    .map(|article| self.article_summary(article, true)),
+            )
             .collect();
-        let word_books = std::iter::once(&self.builtin_word_book)
-            .chain(self.word_books.iter())
-            .map(|book| CollectionSummary {
-                id: book.id.clone(),
-                title: book.title.clone(),
-                count: book.words.len(),
-                selected: self.word_book_id == book.id,
-                source: book.source.clone(),
-                chapter_count: chapter_count(book.words.len()),
-            })
+        let word_books = std::iter::once(self.word_book_summary(&self.builtin_word_book, false))
+            .chain(
+                self.word_books
+                    .iter()
+                    .map(|book| self.word_book_summary(book, true)),
+            )
             .collect();
         ContentCatalogSnapshot {
             mode: self.mode,
@@ -595,6 +614,60 @@ impl ContentCatalog {
         self.mode = PracticeMode::Word;
     }
 
+    /// Remove an imported article. Built-in articles stay in place.
+    pub fn remove_article(&mut self, id: &str) -> Result<(), ContentError> {
+        let before = self.articles.len();
+        self.articles.retain(|article| article.id != id);
+        if self.articles.len() == before {
+            return Err(ContentError::NotRemovable);
+        }
+        if self.article_id == id {
+            self.article_id = self
+                .builtin_articles
+                .first()
+                .map(|article| article.id.clone())
+                .ok_or(ContentError::NoSentences)?;
+        }
+        Ok(())
+    }
+
+    /// Remove an imported word book. The built-in book stays in place.
+    pub fn remove_word_book(&mut self, id: &str) -> Result<(), ContentError> {
+        let before = self.word_books.len();
+        self.word_books.retain(|book| book.id != id);
+        if self.word_books.len() == before {
+            return Err(ContentError::NotRemovable);
+        }
+        if self.word_book_id == id {
+            self.word_book_id = self.builtin_word_book.id.clone();
+        }
+        Ok(())
+    }
+
+    fn article_summary(&self, article: &Article, removable: bool) -> CollectionSummary {
+        CollectionSummary {
+            id: article.id.clone(),
+            title: article.title.clone(),
+            count: article.sentences.len(),
+            selected: self.article_id == article.id,
+            source: article.source.clone(),
+            chapter_count: article_chapter_count(article),
+            removable,
+        }
+    }
+
+    fn word_book_summary(&self, book: &WordBook, removable: bool) -> CollectionSummary {
+        CollectionSummary {
+            id: book.id.clone(),
+            title: book.title.clone(),
+            count: book.words.len(),
+            selected: self.word_book_id == book.id,
+            source: book.source.clone(),
+            chapter_count: chapter_count(book.words.len()),
+            removable,
+        }
+    }
+
     fn article(&self, id: &str) -> Option<&Article> {
         self.builtin_articles
             .iter()
@@ -645,11 +718,19 @@ impl ContentCatalog {
                     .sentences
                     .get(index)
                     .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
+                let span = article_span(article, index);
                 Ok(PracticeItem {
                     collection_title: article.title.clone(),
                     item_count: article.sentences.len(),
                     target: target.clone(),
                     word: None,
+                    translation: article.translations.get(index).cloned().unwrap_or_default(),
+                    chapter_title: span.title,
+                    chapter_titles: article.chapter_titles.clone(),
+                    chapter_index: span.index,
+                    chapter_count: span.count,
+                    chapter_start: span.start,
+                    chapter_len: span.len,
                 })
             }
             PracticeMode::Word => {
@@ -660,12 +741,60 @@ impl ContentCatalog {
                     .words
                     .get(index)
                     .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
+                let chapters = chapter_count(book.words.len());
+                let current_chapter = index / CHAPTER_LENGTH;
+                let start = current_chapter * CHAPTER_LENGTH;
                 Ok(PracticeItem {
                     collection_title: book.title.clone(),
                     item_count: book.words.len(),
                     target: word.name.clone(),
                     word: Some(word.clone()),
+                    translation: String::new(),
+                    chapter_title: String::new(),
+                    chapter_titles: Vec::new(),
+                    chapter_index: current_chapter,
+                    chapter_count: chapters,
+                    chapter_start: start,
+                    chapter_len: (book.words.len() - start).min(CHAPTER_LENGTH),
                 })
+            }
+        }
+    }
+
+    fn chapter_start(
+        &self,
+        mode: PracticeMode,
+        id: &str,
+        chapter: usize,
+    ) -> Result<usize, ContentError> {
+        match mode {
+            PracticeMode::Word => {
+                let count = self.item_count(mode, id)?;
+                let chapters = chapter_count(count);
+                if chapter >= chapters {
+                    return Err(ContentError::InvalidChapter {
+                        chapter,
+                        count: chapters,
+                    });
+                }
+                Ok(chapter * CHAPTER_LENGTH)
+            }
+            PracticeMode::Sentence => {
+                let article = self
+                    .article(id)
+                    .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
+                let chapters = article_chapter_count(article);
+                if chapter >= chapters {
+                    return Err(ContentError::InvalidChapter {
+                        chapter,
+                        count: chapters,
+                    });
+                }
+                if article.chapter_ends.is_empty() || chapter == 0 {
+                    Ok(0)
+                } else {
+                    Ok(article.chapter_ends[chapter - 1])
+                }
             }
         }
     }
@@ -676,6 +805,13 @@ struct PracticeItem {
     item_count: usize,
     target: String,
     word: Option<WordEntry>,
+    translation: String,
+    chapter_title: String,
+    chapter_titles: Vec<String>,
+    chapter_index: usize,
+    chapter_count: usize,
+    chapter_start: usize,
+    chapter_len: usize,
 }
 
 /// Rust-owned current item, position, and typing counters.
@@ -782,15 +918,7 @@ impl PracticeSession {
         chapter: usize,
     ) -> Result<PracticeSnapshot, ContentError> {
         self.sync_selection(catalog)?;
-        let count = catalog.item_count(self.mode, &self.collection_id)?;
-        let chapters = chapter_count(count);
-        if self.mode != PracticeMode::Word || chapter >= chapters {
-            return Err(ContentError::InvalidChapter {
-                chapter,
-                count: chapters,
-            });
-        }
-        self.item_index = chapter * CHAPTER_LENGTH;
+        self.item_index = catalog.chapter_start(self.mode, &self.collection_id, chapter)?;
         self.practice = Practice::default();
         self.remember_position();
         self.make_snapshot(catalog, 0)
@@ -840,27 +968,16 @@ impl PracticeSession {
     ) -> Result<PracticeSnapshot, ContentError> {
         let item = catalog.current_item(self.mode, &self.collection_id, self.item_index)?;
         let stats = statistics(&self.practice, &item.target, milliseconds);
-        let (chapter_index, chapter_count, chapter_item_index, chapter_item_count, chapter_progress) =
-            if self.mode == PracticeMode::Word {
-                let chapters = chapter_count(item.item_count);
-                let current_chapter = self.item_index / CHAPTER_LENGTH;
-                let start = current_chapter * CHAPTER_LENGTH;
-                let items_in_chapter = (item.item_count - start).min(CHAPTER_LENGTH);
-                let completed = current_chapter
-                    .checked_mul(CHAPTER_LENGTH)
-                    .map(|_| self.item_index - start + usize::from(stats.done))
-                    .unwrap_or(0);
-                let progress = ((completed * 100) / items_in_chapter.max(1)) as u32;
-                (
-                    current_chapter + 1,
-                    chapters,
-                    self.item_index - start + 1,
-                    items_in_chapter,
-                    progress.min(100),
-                )
-            } else {
-                (1, 1, self.item_index + 1, item.item_count, stats.percent)
-            };
+        let completed_items = self.item_index - item.chapter_start + usize::from(stats.done);
+        let chapter_progress = if self.mode == PracticeMode::Sentence && item.chapter_count == 1 {
+            stats.percent
+        } else {
+            ((completed_items * 100) / item.chapter_len.max(1)) as u32
+        };
+        let chapter_index = item.chapter_index + 1;
+        let chapter_count = item.chapter_count;
+        let chapter_item_index = self.item_index - item.chapter_start + 1;
+        let chapter_item_count = item.chapter_len;
         let is_chapter_last_item = chapter_item_index == chapter_item_count;
         let is_last_item = self.item_index + 1 == item.item_count;
         Ok(PracticeSnapshot {
@@ -873,11 +990,14 @@ impl PracticeSession {
             chapter_count,
             chapter_item_index,
             chapter_item_count,
-            chapter_progress,
+            chapter_progress: chapter_progress.min(100),
             is_chapter_last_item,
             is_last_item,
             target: item.target.clone(),
             word: item.word,
+            chapter_title: item.chapter_title,
+            chapter_titles: item.chapter_titles,
+            translation: item.translation,
             stats,
             practice: self.practice.clone(),
         })
@@ -886,6 +1006,60 @@ impl PracticeSession {
 
 fn chapter_count(item_count: usize) -> usize {
     item_count.div_ceil(CHAPTER_LENGTH).max(1)
+}
+
+fn article_chapter_count(article: &Article) -> usize {
+    if article.chapter_ends.is_empty() {
+        1
+    } else {
+        article.chapter_ends.len()
+    }
+}
+
+struct ArticleSpan {
+    index: usize,
+    count: usize,
+    start: usize,
+    len: usize,
+    title: String,
+}
+
+fn article_span(article: &Article, item_index: usize) -> ArticleSpan {
+    if article.chapter_ends.is_empty() {
+        return ArticleSpan {
+            index: 0,
+            count: 1,
+            start: 0,
+            len: article.sentences.len().max(1),
+            title: String::new(),
+        };
+    }
+    let count = article.chapter_ends.len();
+    let mut start = 0;
+    for (index, end) in article.chapter_ends.iter().copied().enumerate() {
+        let end = end.min(article.sentences.len());
+        if item_index < end || index + 1 == count {
+            return ArticleSpan {
+                index,
+                count,
+                start,
+                len: end.saturating_sub(start).max(1),
+                title: article
+                    .chapter_titles
+                    .get(index)
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+        }
+        start = end;
+    }
+    ArticleSpan {
+        index: 0,
+        count: 1,
+        start: 0,
+        len: article.sentences.len().max(1),
+        title: String::new(),
+    }
 }
 
 fn clean_article_text(text: &str) -> String {
@@ -985,12 +1159,83 @@ fn stable_id(prefix: &str, title: &str, body: &str) -> String {
     format!("{prefix}:{hash:016x}")
 }
 
-fn builtin_articles() -> Vec<Article> {
-    [
-        ("Meditations", "Marcus Aurelius, George Long translation (public domain)", "You have power over your mind—not outside events. Realize this, and you will find strength.\n\nThe happiness of your life depends upon the quality of your thoughts."),
-        ("Alice's Adventures in Wonderland", "Lewis Carroll (public domain)", "Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do.\n\nOnce or twice she had peeped into the book her sister was reading, but it had no pictures or conversations in it."),
-        ("The Wonderful Wizard of Oz", "L. Frank Baum (public domain)", "Dorothy lived in the midst of the great Kansas prairies, with Uncle Henry, who was a farmer, and Aunt Em, who was the farmer's wife.\n\nTheir house was small, for the lumber to build it had to be carried by wagon many miles."),
-    ].into_iter().filter_map(|(title, source, text)| parse_article(title, source, text).ok()).collect()
+fn builtin_articles() -> Result<Vec<Article>, ContentError> {
+    Ok(vec![movie_article()?])
+}
+
+#[derive(Deserialize)]
+struct MovieLineBook {
+    title: String,
+    source: String,
+    chapters: Vec<MovieChapter>,
+}
+
+#[derive(Deserialize)]
+struct MovieChapter {
+    title: String,
+    lines: Vec<MovieLine>,
+}
+
+#[derive(Deserialize)]
+struct MovieLine {
+    en: String,
+    zh: String,
+}
+
+fn movie_article() -> Result<Article, ContentError> {
+    let book: MovieLineBook = serde_json::from_str(include_str!("../data/movie_lines.json"))
+        .map_err(|error| ContentError::BuiltinArticle(error.to_string()))?;
+    let mut sentences = Vec::new();
+    let mut translations = Vec::new();
+    let mut chapter_titles = Vec::new();
+    let mut chapter_ends = Vec::new();
+    for chapter in book.chapters {
+        let lines: Vec<MovieLine> = chapter
+            .lines
+            .into_iter()
+            .filter(|line| !line.en.trim().is_empty())
+            .collect();
+        if lines.is_empty() {
+            continue;
+        }
+        chapter_titles.push(chapter.title);
+        for line in lines {
+            sentences.push(normalize_practice_text(line.en.trim()));
+            translations.push(line.zh.trim().to_owned());
+        }
+        chapter_ends.push(sentences.len());
+    }
+    if sentences.is_empty() || translations.len() != sentences.len() {
+        return Err(ContentError::BuiltinArticle("没有可练习的台词".to_owned()));
+    }
+    Ok(Article {
+        id: "builtin:movie-lines".to_owned(),
+        title: if book.title.trim().is_empty() {
+            "电影台词".to_owned()
+        } else {
+            book.title
+        },
+        source: book.source,
+        sentences,
+        translations,
+        chapter_titles,
+        chapter_ends,
+    })
+}
+
+fn normalize_practice_text(text: &str) -> String {
+    let mut normalized = String::new();
+    for character in text.chars() {
+        match character {
+            '\u{2018}' | '\u{2019}' | '\u{2032}' => normalized.push('\''),
+            '\u{201c}' | '\u{201d}' => normalized.push('"'),
+            '\u{2013}' | '\u{2014}' => normalized.push('-'),
+            '\u{2026}' => normalized.push_str("..."),
+            '\u{00a0}' => normalized.push(' '),
+            other => normalized.push(other),
+        }
+    }
+    normalized
 }
 
 fn builtin_word_book() -> Result<WordBook, ContentError> {
@@ -1101,7 +1346,9 @@ mod tests {
         let mut catalog = ContentCatalog::new().expect("embedded content is valid");
         catalog.set_mode(PracticeMode::Word);
         let mut session = PracticeSession::new(&catalog).expect("embedded content is valid");
-        let first = session.snapshot(&catalog, 0).expect("embedded content is valid");
+        let first = session
+            .snapshot(&catalog, 0)
+            .expect("embedded content is valid");
         assert_eq!(first.chapter_index, 1);
         assert_eq!(first.chapter_count, 131);
         assert_eq!(first.chapter_item_index, 1);
@@ -1133,7 +1380,10 @@ mod tests {
             .update(&catalog, &last.target, 60_000)
             .expect("last word can be completed");
         assert_eq!(completed.chapter_progress, 100);
-        assert_eq!(session.advance(&catalog), Err(ContentError::EndOfCollection));
+        assert_eq!(
+            session.advance(&catalog),
+            Err(ContentError::EndOfCollection)
+        );
     }
 
     #[test]
@@ -1142,7 +1392,9 @@ mod tests {
         catalog.set_mode(PracticeMode::Word);
         let mut session = PracticeSession::with_stored_progress(&catalog, 1, 20)
             .expect("stored positions are valid");
-        let word = session.snapshot(&catalog, 0).expect("word position restores");
+        let word = session
+            .snapshot(&catalog, 0)
+            .expect("word position restores");
         assert_eq!(word.item_index, 21);
         assert_eq!(word.chapter_index, 2);
 
@@ -1170,5 +1422,89 @@ mod tests {
             parse_article("empty", "test", " \n\t").expect_err("blank article is invalid"),
             ContentError::EmptyArticle
         );
+    }
+
+    #[test]
+    fn sentence_chapters_follow_declared_boundaries() {
+        let mut catalog = ContentCatalog::new().expect("embedded content is valid");
+        catalog.add_article(Article {
+            id: "test:movies".to_owned(),
+            title: "电影台词".to_owned(),
+            source: "test".to_owned(),
+            sentences: vec!["One.".to_owned(), "Two.".to_owned(), "Three.".to_owned()],
+            translations: vec!["一".to_owned(), "二".to_owned(), "三".to_owned()],
+            chapter_titles: vec!["Gone with the Wind".to_owned(), "Forrest Gump".to_owned()],
+            chapter_ends: vec![2, 3],
+        });
+        let mut session = PracticeSession::new(&catalog).expect("article can be practiced");
+        let first = session.snapshot(&catalog, 0).expect("first line exists");
+        assert_eq!(first.chapter_index, 1);
+        assert_eq!(first.chapter_count, 2);
+        assert_eq!(first.chapter_title, "Gone with the Wind");
+        assert_eq!(first.chapter_titles.len(), 2);
+        assert_eq!(first.chapter_item_count, 2);
+        assert_eq!(first.translation, "一");
+        assert_eq!(
+            catalog
+                .snapshot()
+                .articles
+                .iter()
+                .find(|item| item.id == "test:movies")
+                .map(|item| item.chapter_count),
+            Some(2)
+        );
+
+        let completed = session
+            .update(&catalog, &first.target, 1_000)
+            .expect("line can be completed");
+        assert!(completed.stats.done);
+        let second = session.advance(&catalog).expect("second line exists");
+        assert_eq!(second.chapter_item_index, 2);
+        assert!(second.is_chapter_last_item);
+        assert!(!second.is_last_item);
+
+        let next_movie = session
+            .select_chapter(&catalog, 1)
+            .expect("second chapter exists");
+        assert_eq!(next_movie.target, "Three.");
+        assert_eq!(next_movie.chapter_title, "Forrest Gump");
+        assert_eq!(next_movie.translation, "三");
+        assert_eq!(next_movie.chapter_item_index, 1);
+        assert_eq!(next_movie.chapter_item_count, 1);
+    }
+
+    #[test]
+    fn builtin_movie_lines_keep_movie_chapters_and_typeable_punctuation() {
+        let catalog = ContentCatalog::new().expect("embedded content is valid");
+        let articles = catalog.snapshot().articles;
+        assert_eq!(articles.len(), 1);
+        assert_eq!(articles[0].id, "builtin:movie-lines");
+        assert_eq!(articles[0].title, "电影台词");
+        assert_eq!(articles[0].count, 79);
+        assert_eq!(articles[0].chapter_count, 8);
+        assert!(!articles[0].removable);
+
+        let mut session = PracticeSession::new(&catalog).expect("movie lines can be practiced");
+        let first = session.snapshot(&catalog, 0).expect("first line exists");
+        assert_eq!(first.chapter_title, "乱世佳人");
+        assert_eq!(first.chapter_item_count, 11);
+        assert_eq!(first.translation, "不管怎样，明天是新的一天!");
+
+        let typed = PracticeSession::with_stored_progress(&catalog, 3, 0)
+            .expect("fourth line exists")
+            .snapshot(&catalog, 0)
+            .expect("fourth line exists");
+        assert!(typed.target.contains("it's"));
+        assert!(!typed.target.chars().any(|character| matches!(
+            character,
+            '\u{2018}' | '\u{2019}' | '\u{2014}' | '\u{2026}'
+        )));
+
+        let second = session
+            .select_chapter(&catalog, 1)
+            .expect("second movie exists");
+        assert_eq!(second.chapter_title, "怦然心动");
+        assert_eq!(second.chapter_index, 2);
+        assert_eq!(second.item_index, 12);
     }
 }
