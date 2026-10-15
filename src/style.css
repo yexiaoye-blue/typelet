@@ -76,7 +76,7 @@ progress::-moz-progress-bar { background: var(--action); }
 .stats strong { font-size: 21px; line-height: 1.1; font-weight: 600; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
 .stats strong small { margin-left: 1px; font-size: 11px; font-weight: 400; }
 .stats span { color: var(--muted); font-size: 10px; line-height: 1.2; }
-.practice-tile { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 16px 24px; color: var(--ink); background: var(--tile); border-block: 1px solid var(--hairline); }
+.practice-tile { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 16px 24px; color: var(--ink); background: var(--tile); border-top: 1px solid var(--hairline); }
 .passage-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-end; min-height: 20px; }
 .passage-heading select { max-width: 112px; padding: 4px 9px; color: var(--muted); border: 1px solid var(--field-border); border-radius: 999px; background: var(--tile); font-size: 11px; cursor: pointer; }
 .passage-heading select option { color: var(--ink); background: var(--canvas); }

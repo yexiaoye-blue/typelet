@@ -57,6 +57,7 @@
   let surfacePressed = $state(false);
   let input = $state<HTMLTextAreaElement | undefined>();
   let backButton = $state<HTMLButtonElement | undefined>();
+  let settingsPage = $state<HTMLElement | undefined>();
   let textDisplay = $state<HTMLDivElement | undefined>();
   let captureX = $state(0);
   let captureY = $state(0);
@@ -324,6 +325,9 @@
     agentDetailDraft = '';
     agentDetailLoading = true;
     agentError = '';
+    await tick();
+    settingsPage?.scrollTo(0, 0);
+    backButton?.focus();
     try {
       if (isTauri) {
         agentDetail = await invoke<AgentDetail>('get_agent_detail', { agent: agent.id });
@@ -343,6 +347,7 @@
     agentDetail = null;
     agentDetailDraft = '';
     agentError = '';
+    void tick().then(() => settingsPage?.querySelector('.agent-settings')?.scrollIntoView({ block: 'nearest' }));
   }
 
   async function saveAgentDetail() {
@@ -951,6 +956,10 @@
   }
   async function closeSettings() {
     view = 'practice';
+    selectedAgent = null;
+    agentDetail = null;
+    agentDetailDraft = '';
+    agentError = '';
     await tick();
     focusInput();
   }
@@ -978,7 +987,30 @@
   </header>
 
   {#if view === 'settings'}
-    <main class="settings-page">
+    <main class="settings-page" bind:this={settingsPage}>
+      {#if selectedAgent}
+        <div class="settings-heading">
+          <button bind:this={backButton} class="back-button" aria-label={t.agentBack} title={t.agentBack} onclick={closeAgentDetail}>←</button>
+          <h1>{agentDetail?.name ?? t.agentLoading}</h1>
+        </div>
+        <section class="settings-group agent-detail" aria-label={t.agentDetail}>
+          {#if agentDetailLoading}
+            <p class="agent-note">{t.agentLoading}</p>
+          {:else if agentDetail}
+            <p class="agent-note">{agentDetail.event}</p>
+            <div class="detail-meta"><span>{t.agentConfigPath}</span><code>{agentDetail.configPath || t.agentUnavailable}</code></div>
+            <div class="detail-meta"><span>{t.agentFormat}</span><code>{agentDetail.format}</code></div>
+            <p class="agent-note">{agentDetail.note}</p>
+            {#if agentDetail.editable}
+              <textarea class="agent-editor" aria-label={t.agentEditor} bind:value={agentDetailDraft} spellcheck="false"></textarea>
+              <div class="detail-actions"><button class="secondary" onclick={closeAgentDetail}>{t.cancel}</button><button class="primary" disabled={agentDetailSaving} onclick={saveAgentDetail}>{agentDetailSaving ? t.saving : t.save}</button></div>
+            {:else}
+              <p class="agent-note">{t.agentUnavailable}</p>
+            {/if}
+          {/if}
+          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
+        </section>
+      {:else}
       <div class="settings-heading">
         <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={closeSettings}>←</button>
         <h1>{t.settingsTitle}</h1>
@@ -1050,28 +1082,6 @@
         <p class="agent-note">{t.dictionaryNotice}</p>
       </section>
 
-      {#if selectedAgent}
-        <section class="settings-group agent-detail" aria-label={t.agentDetail}>
-          <div class="detail-heading">
-            <button class="detail-back" aria-label={t.agentBack} onclick={closeAgentDetail}>←</button>
-            <div class="settings-copy"><strong>{agentDetail?.name ?? t.agentLoading}</strong><span>{agentDetail?.event ?? ''}</span></div>
-          </div>
-          {#if agentDetailLoading}
-            <p class="agent-note">{t.agentLoading}</p>
-          {:else if agentDetail}
-            <div class="detail-meta"><span>{t.agentConfigPath}</span><code>{agentDetail.configPath || t.agentUnavailable}</code></div>
-            <div class="detail-meta"><span>{t.agentFormat}</span><code>{agentDetail.format}</code></div>
-            <p class="agent-note">{agentDetail.note}</p>
-            {#if agentDetail.editable}
-              <textarea class="agent-editor" aria-label={t.agentEditor} bind:value={agentDetailDraft} spellcheck="false"></textarea>
-              <div class="detail-actions"><button class="secondary" onclick={closeAgentDetail}>{t.cancel}</button><button class="primary" disabled={agentDetailSaving} onclick={saveAgentDetail}>{agentDetailSaving ? t.saving : t.save}</button></div>
-            {:else}
-              <p class="agent-note">{t.agentUnavailable}</p>
-            {/if}
-          {/if}
-          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
-        </section>
-      {:else}
         <section class="settings-group agent-settings" aria-label={t.agents}>
           <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
           {#each agents as agent}
@@ -1084,7 +1094,6 @@
           {/each}
           {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
         </section>
-      {/if}
 
       <section class="settings-group font-settings" aria-label={t.font}>
         <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
@@ -1107,6 +1116,7 @@
           <button disabled={fontsLoading} onclick={loadFonts}>{t.refresh}</button>
         </div>
       </section>
+      {/if}
     </main>
   {:else}
     <main class="practice-page">
@@ -1174,8 +1184,8 @@
           oncompositionstart={() => { composing = true; compositionText = ''; }} oncompositionupdate={(event) => compositionText = event.data}
           oncompositionend={handleCompositionEnd} oninput={handleInput} onkeydown={handleKeydown}></textarea>
         </label>
-        <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' ? snapshot.chapterProgress : stats.percent} max="100"></progress>
       </section>
+      <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' ? snapshot.chapterProgress : stats.percent} max="100"></progress>
 
       <footer>
         {#if chapterPaused}
