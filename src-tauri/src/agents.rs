@@ -102,21 +102,18 @@ fn remove_codex_hook(config: &str) -> String {
 fn insert_codex_hook(config: &str, block: &str) -> String {
     let clean = remove_codex_hook(config);
     let mut result = String::with_capacity(clean.len() + block.len() + 2);
-    match clean.find("[hooks.state]") {
-        Some(index) => {
-            result.push_str(clean[..index].trim_end_matches(['\n', '\r']));
+    if let Some(index) = clean.find("[hooks.state]") {
+        result.push_str(clean[..index].trim_end_matches(['\n', '\r']));
+        result.push_str("\n\n");
+        result.push_str(block.trim());
+        result.push_str("\n\n");
+        result.push_str(clean[index..].trim_start_matches(['\n', '\r']));
+    } else {
+        result.push_str(clean.trim_end_matches(['\n', '\r']));
+        if !result.is_empty() {
             result.push_str("\n\n");
-            result.push_str(block.trim());
-            result.push_str("\n\n");
-            result.push_str(clean[index..].trim_start_matches(['\n', '\r']));
         }
-        None => {
-            result.push_str(clean.trim_end_matches(['\n', '\r']));
-            if !result.is_empty() {
-                result.push_str("\n\n");
-            }
-            result.push_str(block.trim());
-        }
+        result.push_str(block.trim());
     }
     result.push('\n');
     result

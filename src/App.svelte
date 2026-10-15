@@ -1,14 +1,22 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { open } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     characters,
-    freshPractice,
-    passages,
-    statistics as browserStatistics,
-    updatePractice as browserUpdatePractice,
-    type Practice,
+    previewAdvance,
+    previewCatalog,
+    previewReset,
+    previewSelectCollection,
+    previewSelectChapter,
+    previewSnapshot,
+    previewUpdate,
+    summarizeChapter,
+    type ContentCatalogSnapshot,
+    type ChapterWordResult,
+    type PracticeMode,
+    type PracticeSnapshot,
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
@@ -17,81 +25,108 @@
   type LocalePreference = 'system' | Locale;
   type Theme = 'light' | 'dark';
   type ThemePreference = 'system' | Theme;
-  type TextLanguage = 'zh' | 'en';
-  type Statistics = {
-    correct: number;
-    percent: number;
-    accuracy: number;
-    cpm: number;
-    done: boolean;
-  };
-  type Snapshot = { practice: Practice; stats: Statistics };
+  type PronunciationPreference = 'uk' | 'us';
+  type Statistics = PracticeSnapshot['stats'];
   type AgentId = 'codex' | 'cursor' | 'dsh';
   type AgentSummary = { id: AgentId; name: string; enabled: boolean; supported: boolean; configPath: string; format: string; event: string };
   type AgentDetail = AgentSummary & { editable: boolean; content: string; note: string };
+  type ImportReport = ImportResult['report'];
+  type PendingImport = { kind: 'article' | 'wordBook'; path: string; report: ImportReport };
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
-  const emptyStatistics: Statistics = { correct: 0, percent: 0, accuracy: 100, cpm: 0, done: false };
+  type ImportResult = { report: { title: string; count: number; duplicateCount: number; firstItem: string | null }; catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot };
+  const emptySnapshot = previewSnapshot();
 
-  let localePreference: LocalePreference = loadLocalePreference();
-  let systemLocale: Locale = detectSystemLocale();
-  let locale: Locale = 'en';
-  let themePreference: ThemePreference = loadThemePreference();
-  let systemTheme: Theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  let resolvedTheme: Theme = 'light';
-  let view: 'practice' | 'settings' = 'practice';
-  let textLanguage: TextLanguage = 'en';
-  let passageIndex = 0;
-  let practice: Practice = freshPractice();
-  let draft = '';
-  let committedDraft = '';
-  let compositionText = '';
-  let focused = false;
-  let elapsed = 0;
-  let pinned = false;
-  let composing = false;
-  let surfacePressed = false;
-  let input: HTMLTextAreaElement;
-  let backButton: HTMLButtonElement;
-  let textDisplay: HTMLDivElement;
-  let captureX = 0;
-  let captureY = 0;
+  let localePreference = $state<LocalePreference>(loadLocalePreference());
+  let systemLocale = $state<Locale>(detectSystemLocale());
+  let themePreference = $state<ThemePreference>(loadThemePreference());
+  let pronunciationPreference = $state<PronunciationPreference>(loadPronunciationPreference());
+  let autoAdvanceWords = $state(loadAutoAdvanceWords());
+  let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  let view = $state<'practice' | 'settings'>('practice');
+  let snapshot = $state<PracticeSnapshot>(emptySnapshot);
+  let catalog = $state<ContentCatalogSnapshot>(previewCatalog());
+  let draft = $state('');
+  let committedDraft = $state('');
+  let compositionText = $state('');
+  let focused = $state(false);
+  let elapsed = $state(0);
+  let pinned = $state(false);
+  let composing = $state(false);
+  let surfacePressed = $state(false);
+  let input = $state<HTMLTextAreaElement | undefined>();
+  let backButton = $state<HTMLButtonElement | undefined>();
+  let textDisplay = $state<HTMLDivElement | undefined>();
+  let captureX = $state(0);
+  let captureY = $state(0);
+  let wordFontSize = $state(46);
   let resizeObserver: ResizeObserver | undefined;
   let observedDisplay: HTMLDivElement | undefined;
-  let fontPreference = loadFontPreference();
-  let fontSearch = '';
-  let systemFonts: string[] = [];
-  let fontsLoading = false;
-  let fontsLoaded = false;
-  let fontsFailed = false;
-  let agents: AgentSummary[] = [];
-  let agentsLoaded = false;
-  let agentLoading = false;
-  let agentError = '';
-  let selectedAgent: AgentId | null = null;
-  let agentDetail: AgentDetail | null = null;
-  let agentDetailDraft = '';
-  let agentDetailLoading = false;
-  let agentDetailSaving = false;
-  let stats: Statistics = emptyStatistics;
+  let fontPreference = $state(loadFontPreference());
+  let fontSearch = $state('');
+  let systemFonts = $state<string[]>([]);
+  let fontsLoading = $state(false);
+  let fontsLoaded = $state(false);
+  let fontsFailed = $state(false);
+  let agents = $state<AgentSummary[]>([]);
+  let agentsLoaded = $state(false);
+  let agentLoading = $state(false);
+  let agentError = $state('');
+  let selectedAgent = $state<AgentId | null>(null);
+  let agentDetail = $state<AgentDetail | null>(null);
+  let agentDetailDraft = $state('');
+  let agentDetailLoading = $state(false);
+  let agentDetailSaving = $state(false);
+  let importMessage = $state('');
+  let importError = $state('');
+  let importLoading = $state(false);
+  let pendingImport = $state<PendingImport | null>(null);
+  let spokenKey = $state('');
+  let spokenState: 'idle' | 'pending' | 'started' = 'idle';
+  let autoAdvancedKey = $state('');
+  let chapterKey = $state('');
+  let chapterWords = $state<Record<number, ChapterWordResult>>({});
+  let chapterPaused = $state(false);
+  let practicePhase = $state<'idle' | 'running' | 'paused'>('idle');
+  let chapterContinuation = false;
+  let activeAudio: HTMLAudioElement | undefined;
+  let pronunciationGeneration = 0;
+  let finishPronunciation: (() => void) | undefined;
+  let stats = $derived<Statistics>(snapshot.stats);
   let clock = { total: 0, since: null as number | null };
   let requestId = 0;
 
-  $: t = locale === 'zh' ? zh : en;
-  $: locale = localePreference === 'system' ? systemLocale : localePreference;
-  $: resolvedTheme = themePreference === 'system' ? systemTheme : themePreference;
-  $: if (typeof document !== 'undefined') {
+  let locale = $derived<Locale>(localePreference === 'system' ? systemLocale : localePreference);
+  let resolvedTheme = $derived<Theme>(themePreference === 'system' ? systemTheme : themePreference);
+  let t = $derived(locale === 'zh' ? zh : en);
+  let target = $derived(snapshot.target);
+  let expected = $derived(characters(snapshot.target));
+  let selectedPhonetic = $derived(snapshot.word ? pronunciationPreference === 'uk' ? snapshot.word.ukphone : snapshot.word.usphone : '');
+  let selectedPhoneticLabel = $derived(pronunciationPreference === 'uk' ? t.ukPhone : t.usPhone);
+  let chapterTotals = $derived(summarizeChapter(Object.values(chapterWords)));
+  let displayCpm = $derived(chapterPaused ? chapterTotals.cpm : stats.cpm);
+  let displayAccuracy = $derived(chapterPaused ? chapterTotals.accuracy : stats.accuracy);
+  let displayElapsed = $derived(chapterPaused ? chapterTotals.milliseconds : elapsed);
+  let chapterResultTitle = $derived(locale === 'zh'
+    ? t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterSuffix + t.chapterComplete
+    : t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterComplete);
+  let typed = $derived(characters(committedDraft));
+  let filteredFonts = $derived(systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase())));
+  let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
+  let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
+
+  $effect(() => {
+    if (typeof document === 'undefined') return;
     document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
     document.documentElement.dataset.theme = resolvedTheme;
-  }
-  $: target = passages[textLanguage][passageIndex % passages[textLanguage].length];
-  $: expected = characters(target);
-  $: typed = characters(committedDraft);
-  $: filteredFonts = systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase()));
-  $: running = view === 'practice' && focused && practice.attempts > 0 && !stats.done;
-  $: if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
-  $: if (view === 'settings' && !agentsLoaded) void loadAgents();
+  });
+  $effect(() => {
+    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
+  });
+  $effect(() => {
+    if (view === 'settings' && !agentsLoaded) void loadAgents();
+  });
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -101,7 +136,10 @@
     syncSystemTheme();
     syncSystemLocale();
 
-    const stop = () => { focused = false; };
+    const leaveApp = () => {
+      focused = false;
+      pausePractice();
+    };
     const releaseSurface = () => {
       if (!surfacePressed) return;
       surfacePressed = false;
@@ -112,18 +150,36 @@
       syncSystemLocale();
       if (view === 'practice') focusInput();
     };
-    const hidden = () => { if (document.hidden) stop(); else resume(); };
+    const hidden = () => { if (document.hidden) leaveApp(); else resume(); };
 
-    window.addEventListener('blur', stop);
+    window.addEventListener('blur', leaveApp);
     window.addEventListener('pointerup', releaseSurface);
     window.addEventListener('focus', resume);
     window.addEventListener('languagechange', syncSystemLocale);
     document.addEventListener('visibilitychange', hidden);
+    const startFromKey = (event: KeyboardEvent) => {
+      if (view !== 'practice') return;
+      if (chapterPaused) {
+        if (event.key === 'Enter' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          event.preventDefault();
+          void continueAndStart();
+        }
+        return;
+      }
+      if (practicePhase === 'running') return;
+      if (event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('button, select, a, input:not(#typing-capture)')) return;
+      if (practicePhase === 'idle') event.preventDefault();
+      beginPractice();
+    };
+    window.addEventListener('keydown', startFromKey);
     colorScheme.addEventListener?.('change', syncSystemTheme);
     const fontLayoutChanged = () => { void updateCaret(); };
     resizeObserver = new ResizeObserver(fontLayoutChanged);
     document.fonts.addEventListener('loadingdone', fontLayoutChanged);
-    void tick().then(() => focusInput());
+    void loadPractice().then(() => tick()).then(() => focusInput());
 
     if (appWindow) {
       void appWindow.isAlwaysOnTop().then(value => { pinned = value; });
@@ -139,24 +195,27 @@
     timer = setInterval(updateClock, 200);
     return () => {
       if (timer) clearInterval(timer);
-      window.removeEventListener('blur', stop);
+      window.removeEventListener('blur', leaveApp);
       window.removeEventListener('pointerup', releaseSurface);
       window.removeEventListener('focus', resume);
       window.removeEventListener('languagechange', syncSystemLocale);
       document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('keydown', startFromKey);
       colorScheme.removeEventListener?.('change', syncSystemTheme);
       resizeObserver?.disconnect();
       document.fonts.removeEventListener('loadingdone', fontLayoutChanged);
     };
   });
 
-  $: if (running && clock.since === null) {
-    clock.since = performance.now();
-  } else if (!running && clock.since !== null) {
-    clock.total += performance.now() - clock.since;
-    clock.since = null;
-    elapsed = clock.total;
-  }
+  $effect(() => {
+    if (running && clock.since === null) {
+      clock.since = performance.now();
+    } else if (!running && clock.since !== null) {
+      clock.total += performance.now() - clock.since;
+      clock.since = null;
+      elapsed = clock.total;
+    }
+  });
 
   function detectSystemLocale(): Locale {
     const language = typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : 'en';
@@ -185,6 +244,31 @@
   function persistThemePreference(value: ThemePreference) {
     themePreference = value;
     try { localStorage.setItem('typelet.theme.preference', value); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function loadPronunciationPreference(): PronunciationPreference {
+    try {
+      return localStorage.getItem('typelet.word.pronunciation') === 'us' ? 'us' : 'uk';
+    } catch { return 'uk'; }
+  }
+
+  function persistPronunciationPreference(value: PronunciationPreference) {
+    pronunciationPreference = value;
+    try { localStorage.setItem('typelet.word.pronunciation', value); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function loadAutoAdvanceWords(): boolean {
+    try {
+      return localStorage.getItem('typelet.word.autoAdvance') !== 'false';
+    } catch { return true; }
+  }
+
+  function persistAutoAdvanceWords(value: boolean) {
+    if (autoAdvanceWords === value) return;
+    autoAdvanceWords = value;
+    try { localStorage.setItem('typelet.word.autoAdvance', String(value)); } catch { /* browser storage may be unavailable */ }
+    if (value) speakVisibleWord(snapshot, true);
+    else stopPronunciation();
   }
 
   function selectFont(value: string) {
@@ -296,19 +380,272 @@
     input?.focus({ preventScroll: true });
   }
 
+  type WebProgress = { mode: PracticeMode; sentenceId: string; wordBookId: string; sentenceIndex: number; wordIndex: number };
+
+  function defaultWebProgress(): WebProgress {
+    return { mode: 'sentence', sentenceId: 'preview:meditations', wordBookId: 'preview:cet4', sentenceIndex: 0, wordIndex: 0 };
+  }
+
+  function loadWebProgress(): WebProgress {
+    const base = defaultWebProgress();
+    try {
+      const parsed = JSON.parse(localStorage.getItem('typelet.practice.progress') ?? '') as Partial<WebProgress>;
+      const index = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+      return {
+        mode: parsed.mode === 'word' || parsed.mode === 'sentence' ? parsed.mode : base.mode,
+        sentenceId: typeof parsed.sentenceId === 'string' && parsed.sentenceId ? parsed.sentenceId : base.sentenceId,
+        wordBookId: typeof parsed.wordBookId === 'string' && parsed.wordBookId ? parsed.wordBookId : base.wordBookId,
+        sentenceIndex: index(parsed.sentenceIndex),
+        wordIndex: index(parsed.wordIndex),
+      };
+    } catch {
+      return base;
+    }
+  }
+
+  function persistWebProgress(next: PracticeSnapshot) {
+    const previous = loadWebProgress();
+    const progress: WebProgress = {
+      mode: next.mode,
+      sentenceId: next.mode === 'sentence' ? next.collectionId : previous.sentenceId,
+      wordBookId: next.mode === 'word' ? next.collectionId : previous.wordBookId,
+      sentenceIndex: next.mode === 'sentence' ? Math.max(0, next.itemIndex - 1) : previous.sentenceIndex,
+      wordIndex: next.mode === 'word' ? Math.max(0, next.itemIndex - 1) : previous.wordIndex,
+    };
+    try { localStorage.setItem('typelet.practice.progress', JSON.stringify(progress)); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function previewRestoredMode(mode: PracticeMode) {
+    const progress = loadWebProgress();
+    return mode === 'word'
+      ? previewSnapshot('word', progress.wordBookId, progress.wordIndex)
+      : previewSnapshot('sentence', progress.sentenceId, progress.sentenceIndex);
+  }
+
+  async function loadPractice() {
+    try {
+      if (isTauri) {
+        const [nextCatalog, nextSnapshot] = await Promise.all([
+          invoke<ContentCatalogSnapshot>('get_content_catalog'),
+          invoke<PracticeSnapshot>('get_practice_snapshot'),
+        ]);
+        catalog = nextCatalog;
+        applySnapshot(nextSnapshot, true);
+      } else {
+        const progress = loadWebProgress();
+        catalog = previewCatalog(progress.mode, progress.sentenceId, progress.wordBookId);
+        const collectionId = progress.mode === 'word' ? progress.wordBookId : progress.sentenceId;
+        const itemIndex = progress.mode === 'word' ? progress.wordIndex : progress.sentenceIndex;
+        applySnapshot(previewSnapshot(progress.mode, collectionId, itemIndex), true);
+      }
+    } catch (error) {
+      importError = String(error);
+    }
+  }
+
+  function applySnapshot(next: PracticeSnapshot, resetInput: boolean) {
+    snapshot = next;
+    if (resetInput) {
+      draft = next.practice.text;
+      committedDraft = next.practice.text;
+      compositionText = '';
+    }
+    syncChapterSession(next);
+    if (!next.stats.done) autoAdvancedKey = '';
+    handleWordCompletion(next);
+    speakVisibleWord(next);
+    if (!isTauri) persistWebProgress(next);
+  }
+
+  function syncChapterSession(next: PracticeSnapshot) {
+    if (next.mode !== 'word') {
+      chapterKey = '';
+      chapterWords = {};
+      chapterPaused = false;
+      return;
+    }
+    const key = next.collectionId + ':' + next.chapterIndex;
+    if (key === chapterKey) return;
+    chapterKey = key;
+    chapterWords = {};
+    chapterPaused = false;
+  }
+
+  function currentElapsed() {
+    return clock.since === null ? elapsed : clock.total + performance.now() - clock.since;
+  }
+
+  function rememberCompletedWord(next: PracticeSnapshot) {
+    chapterWords = {
+      ...chapterWords,
+      [next.itemIndex]: {
+        attempts: next.practice.attempts,
+        correctAttempts: next.practice.correctAttempts,
+        correct: next.stats.correct,
+        milliseconds: Math.max(0, Math.round(currentElapsed())),
+      },
+    };
+  }
+
+  function invalidateCompletion() {
+    stopPronunciation();
+    spokenKey = '';
+    spokenState = 'idle';
+  }
+
+  function handleWordCompletion(next: PracticeSnapshot) {
+    if (next.mode !== 'word' || !next.word || !next.stats.done) return;
+    const key = next.collectionId + ':' + next.chapterIndex + ':' + next.itemIndex;
+    rememberCompletedWord(next);
+    if (next.isChapterLastItem) {
+      chapterPaused = true;
+      return;
+    }
+    if (!autoAdvanceWords || autoAdvancedKey === key) return;
+    autoAdvancedKey = key;
+    void restart(true);
+  }
+
+  function waitForAudio(audio: HTMLAudioElement) {
+    return new Promise<void>((resolve) => {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (finishPronunciation === finish) finishPronunciation = undefined;
+        audio.removeEventListener('ended', finish);
+        audio.removeEventListener('error', finish);
+        resolve();
+      };
+      finishPronunciation = finish;
+      audio.addEventListener('ended', finish, { once: true });
+      audio.addEventListener('error', finish, { once: true });
+      window.setTimeout(finish, 1800);
+    });
+  }
+
+  function stopPronunciation() {
+    pronunciationGeneration += 1;
+    const finish = finishPronunciation;
+    finishPronunciation = undefined;
+    finish?.();
+    activeAudio?.pause();
+    activeAudio = undefined;
+    window.speechSynthesis?.cancel();
+  }
+
+  function wordKey(next: PracticeSnapshot) {
+    return next.collectionId + ':' + next.chapterIndex + ':' + next.itemIndex;
+  }
+
+  function markSpoken(key: string, generation: number, started: boolean) {
+    if (generation !== pronunciationGeneration || spokenKey !== key) return;
+    if (started) spokenState = 'started';
+    else {
+      spokenKey = '';
+      spokenState = 'idle';
+    }
+  }
+
+  function startSpokenWord(name: string | undefined, key: string, force = false) {
+    if (!name) return;
+    if (!force && spokenKey === key && spokenState !== 'idle') return;
+    spokenKey = key;
+    spokenState = 'pending';
+    void playPronunciation(name).then(result => markSpoken(key, result.generation, result.started));
+  }
+
+  function speakVisibleWord(next: PracticeSnapshot = snapshot, force = false) {
+    if (view !== 'practice' || practicePhase !== 'running' || !autoAdvanceWords || chapterPaused) return;
+    if (next.mode !== 'word' || !next.word || next.stats.done) return;
+    if (next.practice.text || draft || compositionText) return;
+    startSpokenWord(next.word.name, wordKey(next), force);
+  }
+
+  function beginPractice() {
+    if (chapterPaused || view !== 'practice' || practicePhase === 'running') return;
+    practicePhase = 'running';
+    if (snapshot.mode === 'word' && snapshot.word && !snapshot.stats.done) {
+      startSpokenWord(snapshot.word.name, wordKey(snapshot), true);
+    }
+    focusInput();
+  }
+
+  function pausePractice() {
+    if (practicePhase !== 'running') return;
+    practicePhase = 'paused';
+    stopPronunciation();
+  }
+
+  function togglePractice() {
+    if (practicePhase === 'running') pausePractice();
+    else beginPractice();
+  }
+
+  async function playPronunciation(name: string | undefined): Promise<{ generation: number; started: boolean }> {
+    if (!name) return { generation: pronunciationGeneration, started: false };
+    const generation = ++pronunciationGeneration;
+    const finishPrevious = finishPronunciation;
+    finishPronunciation = undefined;
+    finishPrevious?.();
+    activeAudio?.pause();
+    window.speechSynthesis?.cancel();
+    const audioType = pronunciationPreference === 'uk' ? '1' : '2';
+    const audio = new Audio('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(name) + '&type=' + audioType);
+    activeAudio = audio;
+    try {
+      await audio.play();
+      if (generation !== pronunciationGeneration) return { generation, started: false };
+      void waitForAudio(audio);
+      return { generation, started: true };
+    } catch {
+      if (generation !== pronunciationGeneration || activeAudio !== audio) return { generation, started: false };
+      return { generation, started: await speakFallback(name, generation) };
+    }
+  }
+
+  function speakFallback(name: string, generation: number) {
+    const speech = window.speechSynthesis;
+    if (!speech || generation !== pronunciationGeneration) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (started: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(started);
+      };
+      const utterance = new SpeechSynthesisUtterance(name);
+      utterance.lang = pronunciationPreference === 'uk' ? 'en-GB' : 'en-US';
+      utterance.onstart = () => finish(true);
+      utterance.onerror = () => finish(false);
+      window.setTimeout(() => finish(false), 700);
+      try { speech.speak(utterance); } catch { finish(false); }
+    });
+  }
+
+  function replayWord(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (snapshot.word) startSpokenWord(snapshot.word.name, wordKey(snapshot), true);
+    focusInput();
+  }
   function markSurfacePress(event: PointerEvent) {
     const origin = event.target as HTMLElement | null;
-    surfacePressed = view === 'practice' && !origin?.closest('select');
+    surfacePressed = view === 'practice' && !origin?.closest('select, button');
   }
 
   function handleFocus() {
     focused = true;
-    if (!composing) input.setSelectionRange(input.value.length, input.value.length);
+    if (input && !composing) input.setSelectionRange(input.value.length, input.value.length);
+    if (spokenState === 'idle') speakVisibleWord();
   }
 
   async function updateCaret(..._changes: unknown[]) {
     await tick();
     if (view !== 'practice' || !textDisplay || !input) return;
+    const previousWordSize = wordFontSize;
+    fitWordFont();
+    if (wordFontSize !== previousWordSize) await tick();
     if (observedDisplay !== textDisplay) {
       resizeObserver?.disconnect();
       resizeObserver?.observe(textDisplay);
@@ -326,39 +663,66 @@
     captureY = Math.max(0, Math.min(character.top - surface.top, surface.height - 24));
   }
 
+  function fitWordFont() {
+    if (snapshot.mode !== 'word' || !textDisplay) return;
+    const stage = textDisplay.closest('.word-stage') as HTMLElement | null;
+    const available = stage?.clientWidth ?? 0;
+    if (available < 40) return;
+    const maxSize = 46;
+    const minSize = 16;
+    const previousWidth = textDisplay.style.width;
+    const previousMaxWidth = textDisplay.style.maxWidth;
+    textDisplay.style.width = 'max-content';
+    textDisplay.style.maxWidth = 'none';
+    const styleSize = parseFloat(getComputedStyle(textDisplay).fontSize);
+    const natural = textDisplay.scrollWidth * maxSize / styleSize;
+    textDisplay.style.width = previousWidth;
+    textDisplay.style.maxWidth = previousMaxWidth;
+    if (!styleSize || !natural) return;
+    const limit = Math.max(1, available - 12);
+    const fitted = natural <= limit ? maxSize : Math.max(minSize, Math.min(maxSize, Math.floor(maxSize * limit / natural)));
+    if (fitted !== wordFontSize) wordFontSize = fitted;
+  }
+
   async function refreshCore(value: string, milliseconds: number) {
     const id = ++requestId;
-    let snapshot: Snapshot;
+    let nextSnapshot: PracticeSnapshot;
 
     if (isTauri) {
-      snapshot = await invoke<Snapshot>('typing_snapshot', {
-        previous: practice,
+      nextSnapshot = await invoke<PracticeSnapshot>('typing_snapshot', {
         value,
-        target,
         milliseconds: Math.round(milliseconds),
       });
     } else {
-      const nextPractice = browserUpdatePractice(practice, value, target);
-      snapshot = { practice: nextPractice, stats: browserStatistics(nextPractice, target, milliseconds) };
+      nextSnapshot = previewUpdate(snapshot, value, milliseconds);
     }
 
     if (id === requestId) {
-      practice = snapshot.practice;
-      stats = snapshot.stats;
+      applySnapshot(nextSnapshot, false);
     }
   }
 
   function handleInput(event: Event) {
+    if (practicePhase !== 'running') {
+      if (input && input.value !== draft) input.value = draft;
+      return;
+    }
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     draft = value;
     if (!composing) {
       committedDraft = value;
       void refreshCore(value, elapsed);
-      input.setSelectionRange(value.length, value.length);
+      input?.setSelectionRange(value.length, value.length);
     }
   }
 
   function handleCompositionEnd(event: CompositionEvent) {
+    if (practicePhase !== 'running') {
+      composing = false;
+      compositionText = '';
+      if (input && input.value !== draft) input.value = draft;
+      return;
+    }
     composing = false;
     compositionText = '';
     const value = (event.currentTarget as HTMLTextAreaElement).value;
@@ -368,17 +732,32 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.isComposing || composing || event.keyCode === 229 || event.repeat) return;
-    const complete = committedDraft.normalize('NFC') === target.normalize('NFC');
+    if (event.repeat) return;
+    if (event.key === 'Enter' && chapterPaused) {
+      event.preventDefault();
+      if (!snapshot.isLastItem) void continueAndStart();
+      return;
+    }
+    if (practicePhase !== 'running') {
+      if (chapterPaused || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
+      if (practicePhase === 'idle') event.preventDefault();
+      beginPractice();
+      return;
+    }
+    if (event.isComposing || composing || event.keyCode === 229) return;
+    speakVisibleWord(snapshot, spokenState !== 'started');
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (complete) restart(true);
+      if (chapterPaused || (snapshot.mode === 'word' && snapshot.isChapterLastItem && stats.done)) return;
+      if (snapshot.mode === 'word' && autoAdvanceWords && stats.done) return;
+      if (stats.done && !(snapshot.mode === 'word' && snapshot.isLastItem)) void restart(true);
     }
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) event.preventDefault();
   }
 
-  function restart(next = false, language = textLanguage) {
-    const previousLanguage = textLanguage;
+  async function restart(next = false) {
+    invalidateCompletion();
     requestId += 1;
     clock = { total: 0, since: null };
     composing = false;
@@ -386,11 +765,161 @@
     elapsed = 0;
     draft = '';
     committedDraft = '';
-    practice = freshPractice();
-    stats = emptyStatistics;
-    textLanguage = language;
-    passageIndex = next ? passageIndex + 1 : language !== previousLanguage ? 0 : passageIndex;
-    void tick().then(() => focusInput());
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>(next ? 'advance_practice' : 'reset_practice')
+        : next ? previewAdvance(snapshot) : previewReset(snapshot);
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function changeMode(event: Event) {
+    const mode = (event.currentTarget as HTMLSelectElement).value as PracticeMode;
+    invalidateCompletion();
+    requestId += 1;
+    clock = { total: 0, since: null };
+    elapsed = 0;
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_practice_mode', { mode })
+        : previewRestoredMode(mode);
+      if (isTauri) catalog = await invoke<ContentCatalogSnapshot>('get_content_catalog');
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function changeCollection(event: Event) {
+    const id = (event.currentTarget as HTMLSelectElement).value;
+    invalidateCompletion();
+    requestId += 1;
+    clock = { total: 0, since: null };
+    elapsed = 0;
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>(snapshot.mode === 'sentence' ? 'select_article' : 'select_word_book', { id })
+        : previewSelectCollection(snapshot, id);
+      if (isTauri) catalog = await invoke<ContentCatalogSnapshot>('get_content_catalog');
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function changeChapter(event: Event) {
+    if (snapshot.mode !== 'word') return;
+    const chapter = Number((event.currentTarget as HTMLSelectElement).value);
+    invalidateCompletion();
+    requestId += 1;
+    clock = { total: 0, since: null };
+    elapsed = 0;
+    draft = '';
+    committedDraft = '';
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_word_chapter', { chapter })
+        : previewSelectChapter(snapshot, chapter);
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function retryChapter() {
+    if (snapshot.mode !== 'word') return;
+    invalidateCompletion();
+    requestId += 1;
+    clock = { total: 0, since: null };
+    composing = false;
+    compositionText = '';
+    elapsed = 0;
+    draft = '';
+    committedDraft = '';
+    chapterKey = '';
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_word_chapter', { chapter: snapshot.chapterIndex - 1 })
+        : previewSelectChapter(snapshot, snapshot.chapterIndex - 1);
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function continueAfterChapter() {
+    await continueAndStart();
+  }
+
+  async function continueAndStart() {
+    if (chapterContinuation || !chapterPaused || snapshot.isLastItem) return;
+    chapterContinuation = true;
+    practicePhase = 'running';
+    try {
+      await restart(true);
+    } finally {
+      chapterContinuation = false;
+    }
+  }
+
+  function formatDuration(milliseconds: number) {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    return String(Math.floor(totalSeconds / 60)).padStart(2, '0') + ':' + String(totalSeconds % 60).padStart(2, '0');
+  }
+
+  async function importContent(kind: 'article' | 'wordBook') {
+    if (!isTauri || importLoading) return;
+    importLoading = true;
+    importMessage = '';
+    importError = '';
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: kind === 'article' ? 'UTF-8 text' : 'UTF-8 TSV', extensions: kind === 'article' ? ['txt'] : ['tsv', 'txt'] }],
+      });
+      if (typeof selected !== 'string') return;
+      const report = await invoke<ImportReport>(kind === 'article' ? 'preview_article' : 'preview_word_book', { path: selected });
+      pendingImport = { kind, path: selected, report };
+    } catch (error) {
+      importError = String(error);
+    } finally {
+      importLoading = false;
+    }
+  }
+
+  async function confirmImport() {
+    if (!pendingImport || importLoading) return;
+    importLoading = true;
+    importError = '';
+    try {
+      const result = await invoke<ImportResult>(pendingImport.kind === 'article' ? 'import_article' : 'import_word_book', { path: pendingImport.path });
+      catalog = result.catalog;
+      applySnapshot(result.snapshot, true);
+      importMessage = result.report.title + ' · ' + result.report.count + (pendingImport.kind === 'wordBook' ? ' · ' + t.duplicates + ': ' + result.report.duplicateCount : '');
+      pendingImport = null;
+    } catch (error) {
+      importError = String(error);
+    } finally {
+      importLoading = false;
+    }
+  }
+
+  function cancelImport() {
+    pendingImport = null;
+    importError = '';
   }
 
   async function togglePinned() {
@@ -473,6 +1002,54 @@
         </div>
       </section>
 
+      <section class="settings-group content-settings" aria-label={t.contentSettings}>
+        <div class="settings-copy"><strong>{t.contentSettings}</strong><span>{t.contentHint}</span></div>
+        <select class="font-select" aria-label={t.practiceMode} value={snapshot.mode} onchange={changeMode}>
+          <option value="sentence">{t.sentenceMode}</option>
+          <option value="word">{t.wordMode}</option>
+        </select>
+        <div class="settings-copy pronunciation-setting-copy"><strong>{t.wordPronunciation}</strong><span>{t.wordPronunciationHint}</span></div>
+        <div class="segmented-control two-options">
+          <button class:selected={pronunciationPreference === 'uk'} aria-pressed={pronunciationPreference === 'uk'} onclick={() => persistPronunciationPreference('uk')}>{t.britishPronunciation}</button>
+          <button class:selected={pronunciationPreference === 'us'} aria-pressed={pronunciationPreference === 'us'} onclick={() => persistPronunciationPreference('us')}>{t.americanPronunciation}</button>
+        </div>
+        <div class="settings-copy pronunciation-setting-copy"><strong>{t.autoAdvanceWords}</strong><span>{t.autoAdvanceWordsHint}</span></div>
+        <div class="segmented-control two-options">
+          <button class:selected={autoAdvanceWords} aria-pressed={autoAdvanceWords} onclick={() => persistAutoAdvanceWords(true)}>{t.enabled}</button>
+          <button class:selected={!autoAdvanceWords} aria-pressed={!autoAdvanceWords} onclick={() => persistAutoAdvanceWords(false)}>{t.disabled}</button>
+        </div>
+        <select class="font-select" aria-label={t.contentCollection} value={snapshot.collectionId} onchange={changeCollection}>
+          {#if snapshot.mode === 'sentence'}
+            {#each catalog.articles as article}
+              <option value={article.id}>{article.title} · {article.count}</option>
+            {/each}
+          {:else}
+            {#each catalog.wordBooks as wordBook}
+              <option value={wordBook.id}>{wordBook.title} · {wordBook.count}</option>
+            {/each}
+          {/if}
+        </select>
+        {#if isTauri}
+          <div class="detail-actions">
+            <button class="secondary" disabled={importLoading} onclick={() => importContent('article')}>{t.importArticle}</button>
+            <button class="secondary" disabled={importLoading} onclick={() => importContent('wordBook')}>{t.importWordBook}</button>
+          </div>
+        {:else}
+          <p class="agent-note">{t.previewImportHint}</p>
+        {/if}
+        {#if pendingImport}
+          <div class="import-preview">
+            <strong>{pendingImport.report.title}</strong>
+            <span>{t.importPreview}: {pendingImport.report.count} · {pendingImport.report.firstItem ?? t.missing}</span>
+            {#if pendingImport.kind === 'wordBook'}<span>{t.duplicates}: {pendingImport.report.duplicateCount}</span>{/if}
+            <div class="detail-actions"><button class="secondary" onclick={cancelImport}>{t.cancel}</button><button class="primary" disabled={importLoading} onclick={() => void confirmImport()}>{t.confirmImport}</button></div>
+          </div>
+        {/if}
+        {#if importMessage}<p class="agent-note" role="status">{importMessage}</p>{/if}
+        {#if importError}<p class="agent-error" role="alert">{importError}</p>{/if}
+        <p class="agent-note">{t.dictionaryNotice}</p>
+      </section>
+
       {#if selectedAgent}
         <section class="settings-group agent-detail" aria-label={t.agentDetail}>
           <div class="detail-heading">
@@ -533,28 +1110,63 @@
     </main>
   {:else}
     <main class="practice-page">
-      <section class="summary">
+      <section class="summary" class:chapter-paused={chapterPaused}>
         <div class="stats">
-          <div><strong>{stats.cpm}</strong><span>{t.speed}</span></div>
-          <div><strong>{stats.accuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
-          <div><strong>{String(Math.floor(elapsed / 60000)).padStart(2, '0')}:{String(Math.floor(elapsed / 1000) % 60).padStart(2, '0')}</strong><span>{t.time}</span></div>
+          <div><strong>{displayCpm}</strong><span>{t.speed}</span></div>
+          <div><strong>{displayAccuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
+          <div><strong>{formatDuration(displayElapsed)}</strong><span>{t.time}</span></div>
         </div>
       </section>
 
       <section class="practice-tile">
         <div class="passage-heading">
-          <select aria-label={t.practiceLanguage} value={textLanguage} onchange={(event) => restart(false, (event.currentTarget as HTMLSelectElement).value as TextLanguage)}>
-            <option value="en">{t.english}</option>
-            <option value="zh">{t.chinese}</option>
-          </select>
+          {#if snapshot.mode === 'word'}
+            <div class="word-navigation">
+              <span class="practice-label">{snapshot.collectionTitle}</span>
+              <select class="chapter-select" aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
+                {#each Array.from({ length: snapshot.chapterCount }) as _, index}
+                  <option value={index}>{t.chapterPrefix} {index + 1} {t.chapterSuffix}</option>
+                {/each}
+              </select>
+              <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
+            </div>
+          {:else}
+            <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
+          {/if}
         </div>
 
-        <label class="typing-surface" class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
-          <div bind:this={textDisplay} id="passage-text" class="target" aria-label={t.target}>
-            {#each expected as char, index}
-              {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
-            {/each}
-            {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
+
+        <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
+          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:awaiting-start={awaitingStart}>
+            {#if chapterPaused}
+              <div class="chapter-result" role="status">
+                <p class="chapter-result-title">{chapterResultTitle}</p>
+                <p class="chapter-result-count">{chapterTotals.words} {t.chapterWords}</p>
+              </div>
+            {:else}
+            <div class="word-row">
+              <div class="word-slot">
+                <div bind:this={textDisplay} id="passage-text" class="target" class:word-target={snapshot.mode === 'word'} aria-label={t.target} style:font-size={snapshot.mode === 'word' ? wordFontSize + 'px' : undefined}>
+              {#each expected as char, index}
+                {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
+              {/each}
+              {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
+                </div>
+              </div>
+            </div>
+            {#if awaitingStart}
+              <p class="start-hint">{t.pressAnyKey}</p>
+            {/if}
+            {#if snapshot.mode === 'word' && snapshot.word}
+              <div class="phonetic-row">
+                <p class="word-phonetic">{selectedPhonetic ? selectedPhoneticLabel + ' ' + selectedPhonetic : t.missing}</p>
+                <button type="button" class="speaker speaker-inline" aria-label={t.replayPronunciation} title={t.replayPronunciation} onclick={replayWord}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
+                </button>
+              </div>
+              <p class="word-translation">{snapshot.word.trans.length ? snapshot.word.trans.join('；') : t.missingTranslation}</p>
+            {/if}
+            {/if}
           </div>
           <textarea bind:this={input} id="typing-capture" class="typing-capture" aria-label={t.input} aria-describedby="passage-text" style:left={`${captureX}px`} style:top={`${captureY}px`} value={draft} spellcheck="false" autocapitalize="off" autocorrect="off" readonly={stats.done}
           onfocus={handleFocus} onblur={() => focused = false}
@@ -562,10 +1174,17 @@
           oncompositionstart={() => { composing = true; compositionText = ''; }} oncompositionupdate={(event) => compositionText = event.data}
           oncompositionend={handleCompositionEnd} oninput={handleInput} onkeydown={handleKeydown}></textarea>
         </label>
-        <progress class="practice-progress" aria-label={t.progress} value={stats.percent} max="100"></progress>
+        <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' ? snapshot.chapterProgress : stats.percent} max="100"></progress>
       </section>
 
-      <footer><button class="secondary" onclick={() => restart()}>{t.restart}</button><button class="primary" title={stats.done ? t.enterNext : t.next} onclick={() => restart(true)}>{t.next}{#if stats.done}<kbd>↵</kbd>{:else}<span aria-hidden="true">→</span>{/if}</button></footer>
+      <footer>
+        {#if chapterPaused}
+          <button class="secondary" onclick={() => void retryChapter()}>{t.retryChapter}</button>
+          <button class="primary" disabled={snapshot.isLastItem} onclick={() => void continueAfterChapter()}>{snapshot.isLastItem ? t.bookComplete : t.nextChapter}</button>
+        {:else}
+          <button class="secondary" onclick={() => void restart()}>{t.restart}</button><button class="primary" onclick={togglePractice}>{practicePhase === 'running' ? t.pausePractice : t.startPractice}</button>
+        {/if}
+      </footer>
     </main>
   {/if}
 </section>
