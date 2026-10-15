@@ -1,0 +1,63 @@
+name: 发布 RPM
+
+# 打 v* 标签时发布正式版；推送到 develop 或手动运行时，更新名为 test 的预发布版本。
+on:
+  push:
+    branches:
+      - develop
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rpm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rpm:
+    name: Fedora 44 RPM
+    runs-on: ubuntu-latest
+    steps:
+      - name: 取出代码
+        uses: actions/checkout@v4
+
+      - name: 准备构建缓存
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ci/cargo
+            .ci/rustup
+            src-tauri/target
+          key: fedora44-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/typing-core/Cargo.lock', 'package-lock.json') }}
+          restore-keys: |
+            fedora44-
+
+      - name: 在 Fedora 44 中打包
+        run: |
+          mkdir -p .ci/cargo .ci/rustup
+          docker run --rm \
+            -v "$PWD":/work \
+            -w /work \
+            -e CARGO_HOME=/work/.ci/cargo \
+            -e RUSTUP_HOME=/work/.ci/rustup \
+            -e CI=true \
+            fedora:44 \
+            bash -euo pipefail /work/.github/scripts/build-rpm.sh
+
+      - name: 修正文件所有者
+        run: sudo chown -R "$(id -u):$(id -g)" .ci src-tauri/target node_modules dist
+
+      - name: 上传构建附件
+        uses: actions/upload-artifact@v4
+        with:
+          name: typelet-rpm
+          path: src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      - name: 发布到 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/publish-rpm.sh
