@@ -21,6 +21,7 @@
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
+  import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
 
   type Locale = 'zh' | 'en';
   type LocalePreference = 'system' | Locale;
@@ -44,6 +45,7 @@
   let themePreference = $state<ThemePreference>(loadThemePreference());
   let pronunciationPreference = $state<PronunciationPreference>(loadPronunciationPreference());
   let autoAdvanceWords = $state(loadAutoAdvanceWords());
+  let sound = $state<SoundPreference>(loadSoundPreference());
   let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   let view = $state<'practice' | 'settings'>('practice');
   let snapshot = $state<PracticeSnapshot>(emptySnapshot);
@@ -215,6 +217,10 @@
       event.preventDefault();
       beginPractice();
     };
+    preloadKeySound(sound.pack);
+    const primeKeySound = () => unlockKeySound();
+    window.addEventListener('pointerdown', primeKeySound, true);
+    window.addEventListener('keydown', primeKeySound, true);
     window.addEventListener('keydown', startFromKey);
     colorScheme.addEventListener?.('change', syncSystemTheme);
     const fontLayoutChanged = () => { void updateCaret(); };
@@ -244,6 +250,8 @@
       window.removeEventListener('focus', resume);
       window.removeEventListener('languagechange', syncSystemLocale);
       document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('pointerdown', primeKeySound, true);
+      window.removeEventListener('keydown', primeKeySound, true);
       window.removeEventListener('keydown', startFromKey);
       colorScheme.removeEventListener?.('change', syncSystemTheme);
       resizeObserver?.disconnect();
@@ -315,6 +323,58 @@
     if (value) speakVisibleWord(snapshot, true);
     else stopPronunciation();
   }
+
+  function speechLevel() {
+    return sound.speechVolume / 100;
+  }
+
+  function rememberSound(next: SoundPreference) {
+    sound = next;
+    persistSoundPreference(next);
+    if (activeAudio) activeAudio.volume = speechLevel();
+  }
+
+  let keyPreviewAt = 0;
+  function previewKeySound(force = false) {
+    if (!sound.keyEnabled || sound.keyVolume <= 0) return;
+    const now = performance.now();
+    if (!force && now - keyPreviewAt < 80) return;
+    keyPreviewAt = now;
+    playKeySound(sound.pack, sound.keyVolume);
+  }
+
+  function setSpeechVolume(event: Event) {
+    const speechVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
+    if (!Number.isFinite(speechVolume)) return;
+    rememberSound({ ...sound, speechVolume: Math.max(0, Math.min(100, speechVolume)) });
+    if (sound.speechVolume <= 0) stopPronunciation();
+  }
+
+  function setKeyEnabled(enabled: boolean) {
+    rememberSound({ ...sound, keyEnabled: enabled });
+    if (enabled) previewKeySound(true);
+  }
+
+  function setKeyVolume(event: Event) {
+    const keyVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
+    if (!Number.isFinite(keyVolume)) return;
+    rememberSound({ ...sound, keyVolume: Math.max(0, Math.min(100, keyVolume)) });
+    previewKeySound();
+  }
+
+  function setKeyPack(event: Event) {
+    const pack = (event.currentTarget as HTMLSelectElement).value;
+    if (!keySoundPacks.some(item => item.id === pack)) return;
+    rememberSound({ ...sound, pack });
+    previewKeySound(true);
+  }
+
+  function playPracticeKey(previous: string, next: string) {
+    if (!sound.keyEnabled || sound.keyVolume <= 0 || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
+    if (next.length <= previous.length || !next.startsWith(previous)) return;
+    playKeySound(sound.pack, sound.keyVolume);
+  }
+
 
   function selectFont(value: string) {
     fontPreference = value;
@@ -639,6 +699,7 @@
 
   function beginPractice() {
     if (chapterPaused || view !== 'practice' || practicePhase === 'running') return;
+    unlockKeySound();
     practicePhase = 'running';
     if (snapshot.mode === 'word' && snapshot.word && !snapshot.stats.done) {
       startSpokenWord(snapshot.word.name, wordKey(snapshot), true);
@@ -659,6 +720,10 @@
 
   async function playPronunciation(name: string | undefined): Promise<{ generation: number; started: boolean }> {
     if (!name) return { generation: pronunciationGeneration, started: false };
+    if (sound.speechVolume <= 0) {
+      stopPronunciation();
+      return { generation: pronunciationGeneration, started: false };
+    }
     const generation = ++pronunciationGeneration;
     const finishPrevious = finishPronunciation;
     finishPronunciation = undefined;
@@ -667,6 +732,7 @@
     window.speechSynthesis?.cancel();
     const audioType = pronunciationPreference === 'uk' ? '1' : '2';
     const audio = new Audio('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(name) + '&type=' + audioType);
+    audio.volume = speechLevel();
     activeAudio = audio;
     try {
       await audio.play();
@@ -691,6 +757,7 @@
       };
       const utterance = new SpeechSynthesisUtterance(name);
       utterance.lang = pronunciationPreference === 'uk' ? 'en-GB' : 'en-US';
+      utterance.volume = speechLevel();
       utterance.onstart = () => finish(true);
       utterance.onerror = () => finish(false);
       window.setTimeout(() => finish(false), 700);
@@ -790,7 +857,9 @@
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     draft = value;
     if (!composing) {
+      const previous = committedDraft;
       committedDraft = value;
+      playPracticeKey(previous, value);
       void refreshCore(value, itemElapsed());
       input?.setSelectionRange(value.length, value.length);
     }
@@ -807,7 +876,9 @@
     compositionText = '';
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     draft = value;
+    const previous = committedDraft;
     committedDraft = value;
+    playPracticeKey(previous, value);
     void refreshCore(value, itemElapsed());
   }
 
@@ -1237,6 +1308,37 @@
           <span class="nav-value">{snapshot.collectionTitle}</span>
           <span class="chevron" aria-hidden="true">›</span>
         </button>
+      </section>
+
+
+      <section class="settings-group" aria-label={t.soundSettings}>
+        <div class="settings-copy"><strong>{t.soundSettings}</strong><span>{t.soundSettingsHint}</span></div>
+        <div class="setting-block">
+          <label class="volume-control" style:--volume={sound.speechVolume + '%'}>
+            <span>{t.speechVolume}</span>
+            <input type="range" min="0" max="100" step="1" value={sound.speechVolume} oninput={setSpeechVolume} />
+            <span class="volume-value">{sound.speechVolume}%</span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div class="settings-copy"><strong>{t.keySound}</strong><span>{t.keySoundHint}</span></div>
+          <button type="button" class="agent-switch" class:on={sound.keyEnabled} role="switch" aria-checked={sound.keyEnabled} aria-label={t.keySound} onclick={() => setKeyEnabled(!sound.keyEnabled)}><span></span></button>
+        </div>
+        <div class="setting-block" class:is-disabled={!sound.keyEnabled}>
+          <label class="volume-control" style:--volume={sound.keyVolume + '%'}>
+            <span>{t.keyVolume}</span>
+            <input type="range" min="0" max="100" step="1" value={sound.keyVolume} disabled={!sound.keyEnabled} oninput={setKeyVolume} />
+            <span class="volume-value">{sound.keyVolume}%</span>
+          </label>
+          <label class="pack-control">
+            <span>{t.keySoundPack}</span>
+            <select class="font-select" aria-label={t.keySoundPack} disabled={!sound.keyEnabled} value={sound.pack} onchange={setKeyPack}>
+              {#each keySoundPacks as pack}
+                <option value={pack.id}>{pack.id}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
       </section>
 
         <section class="settings-group agent-settings" aria-label={t.agents}>

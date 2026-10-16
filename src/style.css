@@ -175,6 +175,19 @@ progress::-moz-progress-bar { background: var(--action); }
 .settings-group + .settings-group { margin-top: 16px; }
 .setting-block { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); }
 .setting-block .font-select { margin-top: 0; }
+.setting-block.is-disabled { opacity: .45; }
+.volume-control { display: grid; grid-template-columns: max-content minmax(0, 1fr) 3.2em; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.volume-control input[type='range'] { width: 100%; height: 16px; margin: 0; appearance: none; background: transparent; cursor: pointer; }
+.volume-control input[type='range']:disabled { cursor: default; }
+.volume-control input[type='range']:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.volume-control input[type='range']::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: linear-gradient(to right, var(--action) var(--volume), var(--field-border) var(--volume)); }
+.volume-control input[type='range']::-webkit-slider-thumb { appearance: none; width: 16px; height: 16px; margin-top: -6px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 28%), 0 0 0 .5px rgb(0 0 0 / 12%); }
+.volume-control input[type='range']::-moz-range-track { height: 4px; border: 0; border-radius: 999px; background: var(--field-border); }
+.volume-control input[type='range']::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--action); }
+.volume-control input[type='range']::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(0 0 0 / 28%), 0 0 0 .5px rgb(0 0 0 / 12%); }
+.volume-value { color: var(--muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; text-align: right; }
+.pack-control { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; color: var(--ink); font-size: 13px; font-weight: 600; }
+.pack-control .font-select { margin-top: 0; }
 .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); }
 .setting-row .settings-copy { min-width: 0; flex: 1; }
 .nav-row { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); text-align: left; }
