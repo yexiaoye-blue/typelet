@@ -205,7 +205,12 @@
       if (event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
       const target = event.target as HTMLElement | null;
-      if (target?.closest('button, select, a, input:not(#typing-capture)')) return;
+      const practiceButton = target?.closest('.practice-page button');
+      if (practiceButton) {
+        if (event.key === 'Enter' || event.key === ' ') return;
+      } else if (target?.closest('button, select, a, input:not(#typing-capture)')) {
+        return;
+      }
       event.preventDefault();
       beginPractice();
     };
@@ -417,6 +422,24 @@
 
   function focusInput() {
     input?.focus({ preventScroll: true });
+  }
+
+  function practiceButton(event: Event) {
+    if (view !== 'practice') return null;
+    const target = event.target;
+    if (!(target instanceof Element)) return null;
+    return target.closest('.practice-page button');
+  }
+
+  function restorePracticeTypingFocus(event: MouseEvent) {
+    const control = practiceButton(event);
+    if (!control) return;
+    if (event.type === 'mousedown') {
+      event.preventDefault();
+      return;
+    }
+    if (document.activeElement === control) control.blur();
+    focusInput();
   }
 
   type WebProgress = { mode: PracticeMode; sentenceId: string; wordBookId: string; sentenceIndex: number; wordIndex: number };
@@ -672,9 +695,7 @@
 
   function replayWord(event: MouseEvent) {
     event.preventDefault();
-    event.stopPropagation();
     if (snapshot.word) startSpokenWord(snapshot.word.name, wordKey(snapshot), true);
-    focusInput();
   }
   function markSurfacePress(event: PointerEvent) {
     const origin = event.target as HTMLElement | null;
@@ -1250,7 +1271,7 @@
       {/if}
     </main>
   {:else}
-    <main class="practice-page">
+    <main class="practice-page" onmousedown={restorePracticeTypingFocus} onclick={restorePracticeTypingFocus}>
       <section class="practice-tile">
         <div class="passage-heading">
           {#if !chapterPaused}
