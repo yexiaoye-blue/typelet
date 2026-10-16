@@ -206,7 +206,7 @@
       if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
       const target = event.target as HTMLElement | null;
       if (target?.closest('button, select, a, input:not(#typing-capture)')) return;
-      if (practicePhase === 'idle') event.preventDefault();
+      event.preventDefault();
       beginPractice();
     };
     window.addEventListener('keydown', startFromKey);
@@ -704,6 +704,13 @@
     let character = current.getBoundingClientRect();
     if (character.top < display.top + 8) textDisplay.scrollTop -= display.top + 8 - character.top;
     else if (character.bottom > display.bottom - 8) textDisplay.scrollTop += character.bottom - display.bottom + 8;
+    const passage = textDisplay.closest('.sentence-stack') as HTMLElement | null;
+    if (passage && getComputedStyle(passage).display !== 'contents') {
+      const box = passage.getBoundingClientRect();
+      const caret = current.getBoundingClientRect();
+      if (caret.top < box.top + 8) passage.scrollTop -= box.top + 8 - caret.top;
+      else if (caret.bottom > box.bottom - 8) passage.scrollTop += caret.bottom - box.bottom + 8;
+    }
     character = current.getBoundingClientRect();
     const surface = textDisplay.parentElement!.getBoundingClientRect();
     captureX = Math.max(0, Math.min(character.left - surface.left, surface.width - 2));
@@ -788,7 +795,7 @@
     if (practicePhase !== 'running') {
       if (chapterPaused || event.altKey || event.ctrlKey || event.metaKey) return;
       if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
-      if (practicePhase === 'idle') event.preventDefault();
+      event.preventDefault();
       beginPractice();
       return;
     }
@@ -796,9 +803,15 @@
     speakVisibleWord(snapshot, spokenState !== 'started');
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (chapterPaused || (snapshot.isChapterLastItem && stats.done)) return;
+      const reachedEnd = snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length;
+      if (chapterPaused || !stats.done && !reachedEnd) return;
+      if (snapshot.isLastItem) {
+        chapterPaused = true;
+        return;
+      }
+      if (snapshot.isChapterLastItem && stats.done) return;
       if (shouldAutoAdvance(snapshot) && stats.done) return;
-      if (stats.done && !snapshot.isLastItem) void restart(true);
+      void restart(true);
     }
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) event.preventDefault();
   }
@@ -1243,13 +1256,13 @@
           {#if !chapterPaused}
             <div class="practice-controls">
               <button type="button" class="icon-button" aria-label={t.restart} title={t.restart} onclick={() => void restart()}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.6" /><path d="M20 4.5V9h-4.5" /></svg>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(12 12) scale(0.72) translate(-12 -12)"><path class="stroke heavy" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path class="stroke heavy" d="M3 3v5h5" /></g></svg>
               </button>
               <button type="button" class="icon-button" aria-label={practicePhase === 'running' ? t.pausePractice : t.startPractice} title={practicePhase === 'running' ? t.pausePractice : t.startPractice} onclick={togglePractice}>
                 {#if practicePhase === 'running'}
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h2.6v12H8zM13.4 6H16v12h-2.6z" /></svg>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9 5.4v13.2M15 5.4v13.2" /></svg>
                 {:else}
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 6.5v11l10-5.5-10-5.5z" /></svg>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9.2 5.6v12.8L18.4 12 9.2 5.6z" /></svg>
                 {/if}
               </button>
             </div>
@@ -1271,7 +1284,7 @@
 
 
         <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
-          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:with-gloss={snapshot.mode === 'sentence' && snapshot.translation.length > 0} class:awaiting-start={awaitingStart}>
+          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:with-gloss={snapshot.mode === 'sentence' && snapshot.translation.length > 0} class:awaiting-start={awaitingStart} class:paused={practicePhase === 'paused' && !chapterPaused}>
             {#if chapterPaused}
               <div class="chapter-result" role="status">
                 <p class="chapter-result-title">{chapterResultTitle}</p>
@@ -1299,6 +1312,8 @@
             </div>
             {#if awaitingStart}
               <p class="start-hint">{t.pressAnyKey}</p>
+            {:else if practicePhase === 'paused' && !chapterPaused}
+              <p class="start-hint">{t.pressAnyKeyContinue}</p>
             {/if}
             {#if snapshot.mode === 'word' && snapshot.word}
               <div class="phonetic-row">

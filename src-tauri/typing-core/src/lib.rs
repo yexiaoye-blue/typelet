@@ -899,7 +899,7 @@ impl PracticeSession {
     pub fn advance(&mut self, catalog: &ContentCatalog) -> Result<PracticeSnapshot, ContentError> {
         self.sync_selection(catalog)?;
         let current = self.make_snapshot(catalog, 0)?;
-        if !current.stats.done {
+        if !current.stats.done && !attempt_reaches_end(&current.practice, &current.target) {
             return Err(ContentError::ItemNotComplete);
         }
         if self.mode == PracticeMode::Word && current.is_last_item {
@@ -1006,6 +1006,12 @@ impl PracticeSession {
 
 fn chapter_count(item_count: usize) -> usize {
     item_count.div_ceil(CHAPTER_LENGTH).max(1)
+}
+
+fn attempt_reaches_end(practice: &Practice, target: &str) -> bool {
+    let typed = practice.text.nfc().count();
+    let expected = target.nfc().count();
+    expected > 0 && typed >= expected
 }
 
 fn article_chapter_count(article: &Article) -> usize {
@@ -1339,6 +1345,24 @@ mod tests {
         let next = session.advance(&catalog).expect("completed item advances");
         assert_eq!(next.item_index, 2);
         assert!(next.practice.text.is_empty());
+
+        let mut skipped = PracticeSession::new(&catalog).expect("embedded content is valid");
+        let target = skipped
+            .snapshot(&catalog, 0)
+            .expect("embedded content is valid")
+            .target;
+        let short = target.chars().take(target.chars().count().saturating_sub(1)).collect::<String>();
+        skipped
+            .update(&catalog, &short, 1_000)
+            .expect("short attempt can be stored");
+        assert_eq!(skipped.advance(&catalog), Err(ContentError::ItemNotComplete));
+        let same_length = "x".repeat(target.chars().count());
+        let wrong = skipped
+            .update(&catalog, &same_length, 1_000)
+            .expect("full-length attempt can be stored");
+        assert!(!wrong.stats.done);
+        let moved = skipped.advance(&catalog).expect("reaching the end can advance");
+        assert_eq!(moved.item_index, 2);
     }
 
     #[test]

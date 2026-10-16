@@ -31,6 +31,14 @@ test('web preview uses the same snapshot shape and waits for Enter to advance', 
  assert.equal(complete.itemIndex, 1);
  assert.equal(previewAdvance(complete).itemIndex, 2);
 });
+test('a wrong attempt can advance once it reaches the end of the text', () => {
+  const initial = previewSnapshot();
+  const wrongText = Array.from(initial.target, () => 'x').join('');
+  const wrong = previewUpdate(initial, wrongText, 1000);
+  assert.equal(wrong.stats.done, false);
+  assert.equal(previewAdvance(wrong).itemIndex, 2);
+  assert.throws(() => previewAdvance(previewUpdate(initial, wrongText.slice(0, -1), 1000)));
+});
 test('sentence preset groups movie lines into chapters', () => {
   const first = previewSnapshot();
   assert.equal(first.collectionId, 'builtin:movie-lines');

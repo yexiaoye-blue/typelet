@@ -185,7 +185,8 @@ export function previewReset(snapshot: PracticeSnapshot): PracticeSnapshot {
 }
 
 export function previewAdvance(snapshot: PracticeSnapshot): PracticeSnapshot {
-  if (!snapshot.stats.done) throw new Error('当前练习项尚未完成');
+  const reachedEnd = snapshot.target.length > 0 && characters(snapshot.practice.text).length >= characters(snapshot.target).length;
+  if (!snapshot.stats.done && !reachedEnd) throw new Error('当前练习项尚未完成');
   if (snapshot.mode === 'word' && snapshot.isLastItem) throw new Error('本词书已完成');
   return previewSnapshot(snapshot.mode, snapshot.collectionId, snapshot.itemIndex % snapshot.itemCount);
 }
