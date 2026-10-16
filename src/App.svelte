@@ -165,6 +165,7 @@
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
+    let unlistenFocus: (() => void) | undefined;
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
     const syncSystemTheme = () => { systemTheme = colorScheme.matches ? 'dark' : 'light'; };
     const syncSystemLocale = () => { systemLocale = detectSystemLocale(); };
@@ -223,6 +224,9 @@
 
     if (appWindow) {
       void appWindow.isAlwaysOnTop().then(value => { pinned = value; });
+      void appWindow.onFocusChanged(({ payload: active }) => {
+        if (!active) pausePractice();
+      }).then(unlisten => { unlistenFocus = unlisten; });
     }
 
     const updateClock = () => {
@@ -244,6 +248,7 @@
       colorScheme.removeEventListener?.('change', syncSystemTheme);
       resizeObserver?.disconnect();
       document.fonts.removeEventListener('loadingdone', fontLayoutChanged);
+      unlistenFocus?.();
     };
   });
 
