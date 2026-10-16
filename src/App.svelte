@@ -217,11 +217,24 @@
       event.preventDefault();
       beginPractice();
     };
+    const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (view === 'settings') {
+        event.preventDefault();
+        void navigateBack();
+        return;
+      }
+      if (view === 'practice' && practicePhase === 'running') {
+        event.preventDefault();
+        pausePractice();
+      }
+    };
     preloadKeySound(sound.pack);
     const primeKeySound = () => unlockKeySound();
     window.addEventListener('pointerdown', primeKeySound, true);
     window.addEventListener('keydown', primeKeySound, true);
     window.addEventListener('keydown', startFromKey);
+    window.addEventListener('keydown', handleGlobalKeydown);
     colorScheme.addEventListener?.('change', syncSystemTheme);
     const fontLayoutChanged = () => { void updateCaret(); };
     resizeObserver = new ResizeObserver(fontLayoutChanged);
@@ -253,6 +266,7 @@
       window.removeEventListener('pointerdown', primeKeySound, true);
       window.removeEventListener('keydown', primeKeySound, true);
       window.removeEventListener('keydown', startFromKey);
+      window.removeEventListener('keydown', handleGlobalKeydown);
       colorScheme.removeEventListener?.('change', syncSystemTheme);
       resizeObserver?.disconnect();
       document.fonts.removeEventListener('loadingdone', fontLayoutChanged);
@@ -884,6 +898,7 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.repeat) return;
+    if (event.key === 'Escape') return;
     if (event.key === 'Enter' && chapterPaused) {
       event.preventDefault();
       if (!snapshot.isLastItem) void continueAndStart();
@@ -1152,6 +1167,18 @@
     await tick();
     focusInput();
   }
+
+  async function navigateBack() {
+    if (selectedAgent) {
+      closeAgentDetail();
+      return;
+    }
+    if (libraryOpen) {
+      closeLibrary();
+      return;
+    }
+    if (view === 'settings') await closeSettings();
+  }
 </script>
 
 <svelte:head>
@@ -1162,7 +1189,7 @@
   <header class="global-nav" role="presentation" onmousedown={dragWindow}>
     <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
     <div class="window-actions">
-      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? closeSettings() : openSettings()}>
+      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? navigateBack() : openSettings()}>
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 3 .5-1h3l.5 1 .5 1 1 .5 1-.5 2 2-.5 1 .5 1 1 .5 1 .5v3l-1 .5-1 .5-.5 1 .5 1-2 2-1-.5-1 .5-.5 1-.5 1h-3l-.5-1-.5-1-1-.5-1 .5-2-2 .5-1-.5-1-1-.5-1-.5v-3l1-.5 1-.5.5-1-.5-1 2-2 1 .5 1-.5.5-1Z" /><circle cx="10" cy="10" r="2.5" /></svg>
       </button>
       {#if isTauri}
@@ -1179,7 +1206,7 @@
     <main class="settings-page" bind:this={settingsPage}>
       {#if selectedAgent}
         <div class="settings-heading">
-          <button bind:this={backButton} class="back-button" aria-label={t.agentBack} title={t.agentBack} onclick={closeAgentDetail}>←</button>
+          <button bind:this={backButton} class="back-button" aria-label={t.agentBack} title={t.agentBack} onclick={navigateBack}>←</button>
           <h1>{agentDetail?.name ?? t.agentLoading}</h1>
         </div>
         <section class="settings-group agent-detail" aria-label={t.agentDetail}>
@@ -1201,7 +1228,7 @@
         </section>
       {:else if libraryOpen}
         <div class="settings-heading">
-          <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={closeLibrary}>←</button>
+          <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
           <h1>{t.library}</h1>
         </div>
         <p class="library-intro">{t.libraryHint}</p>
@@ -1262,7 +1289,7 @@
         {/if}
       {:else}
       <div class="settings-heading">
-        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={closeSettings}>←</button>
+        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
         <h1>{t.settingsTitle}</h1>
       </div>
 
