@@ -23,6 +23,7 @@
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
   import { ScrollMemory } from './scroll-memory';
   import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
+  import SettingsSelect, { type SettingsSelectOption } from './components/SettingsSelect.svelte';
 
   type Locale = 'zh' | 'en';
   type LocalePreference = 'system' | Locale;
@@ -137,6 +138,18 @@
   let chapterResultUnit = $derived(snapshot.mode === 'sentence' ? t.chapterSentences : t.chapterWords);
   let typed = $derived(characters(committedDraft));
   let filteredFonts = $derived(systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase())));
+  const keySoundOptions: SettingsSelectOption[] = keySoundPacks.map(pack => ({ value: pack.id, label: pack.id }));
+  let fontOptions = $derived.by((): SettingsSelectOption[] => {
+    const options: SettingsSelectOption[] = [
+      { value: bundledFont, label: 'Noto Sans Mono · ' + t.builtIn },
+      { value: 'system', label: t.systemFont },
+    ];
+    if (fontPreference.startsWith('font:') && !filteredFonts.includes(fontPreference.slice(5))) {
+      options.push({ value: fontPreference, label: fontPreference.slice(5) });
+    }
+    options.push(...filteredFonts.map(family => ({ value: 'font:' + family, label: family, group: t.systemFonts })));
+    return options;
+  });
   let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
   let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
@@ -383,8 +396,7 @@
     previewKeySound();
   }
 
-  function setKeyPack(event: Event) {
-    const pack = (event.currentTarget as HTMLSelectElement).value;
+  function setKeyPack(pack: string) {
     if (!keySoundPacks.some(item => item.id === pack)) return;
     rememberSound({ ...sound, pack });
     previewKeySound(true);
@@ -1387,14 +1399,15 @@
             <input type="range" min="0" max="100" step="1" value={sound.keyVolume} disabled={!sound.keyEnabled} oninput={setKeyVolume} />
             <span class="volume-value">{sound.keyVolume}%</span>
           </label>
-          <label class="pack-control">
+          <div class="pack-control">
             <span>{t.keySoundPack}</span>
-            <select class="font-select" aria-label={t.keySoundPack} disabled={!sound.keyEnabled} value={sound.pack} onchange={setKeyPack}>
-              {#each keySoundPacks as pack}
-                <option value={pack.id}>{pack.id}</option>
-              {/each}
-            </select>
-          </label>
+            <div class="sound-picker-row">
+              <SettingsSelect value={sound.pack} options={keySoundOptions} ariaLabel={t.keySoundPack} disabled={!sound.keyEnabled} onSelect={setKeyPack} />
+              <button type="button" class="speaker sound-preview-button" aria-label={t.previewKeySound} title={t.previewKeySound} disabled={!sound.keyEnabled || sound.keyVolume <= 0} onclick={() => previewKeySound(true)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1414,18 +1427,7 @@
       <section class="settings-group font-settings" aria-label={t.font}>
         <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
         <input class="font-search" type="search" aria-label={t.fontSearch} placeholder={t.fontSearch} bind:value={fontSearch} />
-        <select class="font-select" aria-label={t.font} value={fontPreference} onchange={(event) => selectFont((event.currentTarget as HTMLSelectElement).value)}>
-          <option value={bundledFont}>Noto Sans Mono · {t.builtIn}</option>
-          <option value="system">{t.systemFont}</option>
-          {#if fontPreference.startsWith('font:') && !filteredFonts.includes(fontPreference.slice(5))}
-            <option value={fontPreference}>{fontPreference.slice(5)}</option>
-          {/if}
-          <optgroup label={t.systemFonts}>
-            {#each filteredFonts as family}
-              <option value={`font:${family}`}>{family}</option>
-            {/each}
-          </optgroup>
-        </select>
+        <SettingsSelect value={fontPreference} options={fontOptions} ariaLabel={t.font} onSelect={selectFont} />
         <div class="font-sample" aria-label={t.fontSample}>Aa Bb 123 · 中文</div>
         <div class="font-list-status">
           <span role="status">{fontsLoading ? t.fontLoading : fontsFailed ? t.fontError : `${t.fontCount}: ${systemFonts.length}`}</span>
