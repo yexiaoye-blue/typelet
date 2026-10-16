@@ -55,7 +55,7 @@ button:active { transform: scale(.97); }
 .widget { display: flex; flex-direction: column; width: 100%; max-width: 460px; height: 100%; margin: auto; overflow: hidden; background: var(--canvas); }
 .global-nav { flex: 0 0 44px; padding: 0 16px; display: flex; align-items: center; justify-content: space-between; color: #ffffff; background: #000000; user-select: none; -webkit-app-region: drag; }
 .brand { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; letter-spacing: -.2px; }
-.brand-mark { width: 22px; height: 22px; display: grid; place-items: center; color: #000000; background: #ffffff; border-radius: 50%; font-size: 12px; }
+.brand-mark { width: 22px; height: 22px; display: block; flex: none; color: transparent; background: url('/favicon.svg') center / 100% 100% no-repeat; border-radius: 6px; font-size: 0; line-height: 0; }
 .window-actions { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
 .window-actions button { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font-size: 19px; line-height: 1; transition: background .15s; }
 .window-actions button:hover { background: #333333; }

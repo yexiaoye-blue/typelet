@@ -1,1 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#0066cc"/><path d="M16 18h32v8H36v24h-8V26H16z" fill="#ffffff"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="typelet-blue" x1="12" y1="0" x2="51" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0a78eb" />
+      <stop offset="0.62" stop-color="#0069df" />
+      <stop offset="1" stop-color="#0051be" />
+    </linearGradient>
+    <linearGradient id="typelet-lower" x1="32" y1="44" x2="32" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0065d8" />
+      <stop offset="1" stop-color="#004eb7" />
+    </linearGradient>
+    <clipPath id="typelet-shape">
+      <rect width="64" height="64" rx="16" />
+    </clipPath>
+  </defs>
+  <g clip-path="url(#typelet-shape)">
+    <rect width="64" height="64" fill="url(#typelet-blue)" />
+    <path d="M0 47 8 41l9 8h30l9-8 8 6v17H0Z" fill="url(#typelet-lower)" />
+    <path d="M16 17h32a4 4 0 0 1 4 4v1a4 4 0 0 1-4 4H36v20a4 4 0 0 1-4 4 4 4 0 0 1-4-4V26H16a4 4 0 0 1-4-4v-1a4 4 0 0 1 4-4Z" fill="#fff" />
+  </g>
+</svg>
