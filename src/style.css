@@ -121,18 +121,20 @@ progress::-moz-progress-bar { background: var(--action); }
 .word-phonetic { overflow: hidden; color: var(--muted); font-size: 14px; line-height: 28px; white-space: nowrap; text-overflow: ellipsis; }
 .word-translation { display: -webkit-box; width: 100%; height: 48px; overflow: hidden; color: var(--ink); font-size: 16px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .practice-body { position: relative; }
-.awaiting-start .word-row,
-.awaiting-start .phonetic-row,
-.awaiting-start .word-translation,
-.awaiting-start .sentence-gloss,
-.paused .word-row,
-.paused .phonetic-row,
-.paused .word-translation,
-.paused .sentence-gloss {
+.awaiting-start:not(.with-gloss) .word-row,
+.awaiting-start:not(.with-gloss) .phonetic-row,
+.awaiting-start:not(.with-gloss) .word-translation,
+.paused:not(.with-gloss) .word-row,
+.paused:not(.with-gloss) .phonetic-row,
+.paused:not(.with-gloss) .word-translation,
+.awaiting-start.with-gloss .sentence-stack,
+.paused.with-gloss .sentence-stack {
   filter: blur(8px);
   opacity: 0.8;
   user-select: none;
 }
+.awaiting-start.with-gloss .sentence-stack,
+.paused.with-gloss .sentence-stack { overflow: visible; }
 .start-hint { margin: 0; color: var(--ink); font-size: 15px; font-weight: 400; line-height: 20px; text-align: center; pointer-events: none; }
 .awaiting-start .start-hint,
 .paused .start-hint { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; }
