@@ -20,7 +20,7 @@ A small cross-platform typing window for the time you spend waiting on an agent.
 - 词本有单独一页，可以切换预置内容、导入文章或词表，也可以移除导入的内容。
 - 外观、界面语言和练习字体可跟随系统，也可手动选择。设置里可以打开 Codex、Cursor 的自动唤起；DeepSeek Harness 仍在等待可用的 hook。
 
-右上角齿轮进入设置。练习正文不可选中。点击发音按钮后，焦点会回到输入区，可以直接继续打。
+右上角齿轮或按 `Ctrl + ,` 进入设置。练习正文不可选中。点击发音按钮后，焦点会回到输入区，可以直接继续打。
 
 ## 导入数据
 
