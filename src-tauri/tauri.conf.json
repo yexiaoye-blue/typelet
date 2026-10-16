@@ -21,7 +21,6 @@
         "maxWidth": 460,
         "maxHeight": 650,
         "decorations": false,
-        "alwaysOnTop": true,
         "resizable": true,
         "center": true
       }

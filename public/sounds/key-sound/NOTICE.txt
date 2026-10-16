@@ -1,0 +1,2 @@
+Key click recordings distributed with Qwerty Learner (https://github.com/RealKai42/qwerty-learner), public/sounds/key-sound.
+The mechanical keyboard recordings come from kbsim (https://github.com/tplai/kbsim).

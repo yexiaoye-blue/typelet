@@ -13,3 +13,6 @@ src-tauri/gen/schemas/
 .DS_Store
 .idea/
 .vscode/
+
+# Actions 构建缓存
+.ci/

@@ -1,141 +1,295 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import confetti from 'canvas-confetti';
   import { invoke } from '@tauri-apps/api/core';
+  import { open } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     characters,
-    freshPractice,
-    passages,
-    statistics as browserStatistics,
-    updatePractice as browserUpdatePractice,
-    type Practice,
+    previewAdvance,
+    previewCatalog,
+    previewReset,
+    previewSelectCollection,
+    previewSelectChapter,
+    previewSnapshot,
+    previewUpdate,
+    summarizeChapter,
+    type ContentCatalogSnapshot,
+    type ChapterWordResult,
+    type PracticeMode,
+    type PracticeSnapshot,
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
+  import { ScrollMemory } from './scroll-memory';
+  import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
 
   type Locale = 'zh' | 'en';
   type LocalePreference = 'system' | Locale;
   type Theme = 'light' | 'dark';
   type ThemePreference = 'system' | Theme;
-  type TextLanguage = 'zh' | 'en';
-  type Statistics = {
-    correct: number;
-    percent: number;
-    accuracy: number;
-    cpm: number;
-    done: boolean;
-  };
-  type Snapshot = { practice: Practice; stats: Statistics };
+  type PronunciationPreference = 'uk' | 'us';
+  type Statistics = PracticeSnapshot['stats'];
+  type AgentId = 'codex' | 'cursor' | 'dsh';
+  type AgentSummary = { id: AgentId; name: string; enabled: boolean; supported: boolean; configPath: string; format: string; event: string };
+  type AgentDetail = AgentSummary & { editable: boolean; content: string; note: string };
+  type ImportReport = ImportResult['report'];
+  type PendingImport = { kind: 'article' | 'wordBook'; path: string; report: ImportReport };
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
-  const emptyStatistics: Statistics = { correct: 0, percent: 0, accuracy: 100, cpm: 0, done: false };
+  type ImportResult = { report: { title: string; count: number; duplicateCount: number; firstItem: string | null }; catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot };
+  const emptySnapshot = previewSnapshot();
 
-  let localePreference: LocalePreference = loadLocalePreference();
-  let systemLocale: Locale = detectSystemLocale();
-  let locale: Locale = 'en';
-  let themePreference: ThemePreference = loadThemePreference();
-  let systemTheme: Theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  let resolvedTheme: Theme = 'light';
-  let view: 'practice' | 'settings' = 'practice';
-  let textLanguage: TextLanguage = 'en';
-  let passageIndex = 0;
-  let practice: Practice = freshPractice();
-  let draft = '';
-  let committedDraft = '';
-  let compositionText = '';
-  let focused = false;
-  let elapsed = 0;
-  let pinned = false;
-  let composing = false;
-  let input: HTMLTextAreaElement;
-  let backButton: HTMLButtonElement;
-  let textDisplay: HTMLDivElement;
-  let captureX = 0;
-  let captureY = 0;
+  let localePreference = $state<LocalePreference>(loadLocalePreference());
+  let systemLocale = $state<Locale>(detectSystemLocale());
+  let themePreference = $state<ThemePreference>(loadThemePreference());
+  let pronunciationPreference = $state<PronunciationPreference>(loadPronunciationPreference());
+  let autoAdvanceWords = $state(loadAutoAdvanceWords());
+  let sound = $state<SoundPreference>(loadSoundPreference());
+  let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  let view = $state<'practice' | 'settings'>('practice');
+  let snapshot = $state<PracticeSnapshot>(emptySnapshot);
+  let libraries = $derived(snapshot.mode === 'sentence' ? catalog.articles : catalog.wordBooks);
+  let catalog = $state<ContentCatalogSnapshot>(previewCatalog());
+  let draft = $state('');
+  let committedDraft = $state('');
+  let compositionText = $state('');
+  let focused = $state(false);
+  let elapsed = $state(0);
+  let pinned = $state(false);
+  let pinGeneration = 0;
+  let composing = $state(false);
+  let surfacePressed = $state(false);
+  let input = $state<HTMLTextAreaElement | undefined>();
+  let backButton = $state<HTMLButtonElement | undefined>();
+  let settingsPage = $state<HTMLElement | undefined>();
+  const settingsScroll = new ScrollMemory();
+
+  let textDisplay = $state<HTMLDivElement | undefined>();
+  let captureX = $state(0);
+  let captureY = $state(0);
+  let wordFontSize = $state(46);
   let resizeObserver: ResizeObserver | undefined;
   let observedDisplay: HTMLDivElement | undefined;
-  let fontPreference = loadFontPreference();
-  let fontSearch = '';
-  let systemFonts: string[] = [];
-  let fontsLoading = false;
-  let fontsLoaded = false;
-  let fontsFailed = false;
-  let stats: Statistics = emptyStatistics;
+  let fontPreference = $state(loadFontPreference());
+  let fontSearch = $state('');
+  let systemFonts = $state<string[]>([]);
+  let fontsLoading = $state(false);
+  let fontsLoaded = $state(false);
+  let fontsFailed = $state(false);
+  let agents = $state<AgentSummary[]>([]);
+  let agentsLoaded = $state(false);
+  let agentLoading = $state(false);
+  let agentError = $state('');
+  let selectedAgent = $state<AgentId | null>(null);
+  let libraryOpen = $state(false);
+  let agentDetail = $state<AgentDetail | null>(null);
+  let agentDetailDraft = $state('');
+  let agentDetailLoading = $state(false);
+  let agentDetailSaving = $state(false);
+  let importMessage = $state('');
+  let importError = $state('');
+  let importLoading = $state(false);
+  let pendingImport = $state<PendingImport | null>(null);
+  let spokenKey = $state('');
+  let spokenState: 'idle' | 'pending' | 'started' = 'idle';
+  let autoAdvancedKey = $state('');
+  let chapterKey = $state('');
+  let chapterWords = $state<Record<number, ChapterWordResult>>({});
+  let chapterPaused = $state(false);
+  let practicePhase = $state<'idle' | 'running' | 'paused'>('idle');
+  let chapterContinuation = false;
+  let activeAudio: HTMLAudioElement | undefined;
+  let pronunciationGeneration = 0;
+  let finishPronunciation: (() => void) | undefined;
+  let stats = $derived<Statistics>(snapshot.stats);
   let clock = { total: 0, since: null as number | null };
+  let itemElapsedOrigin = 0;
   let requestId = 0;
 
-  $: t = locale === 'zh' ? zh : en;
-  $: locale = localePreference === 'system' ? systemLocale : localePreference;
-  $: resolvedTheme = themePreference === 'system' ? systemTheme : themePreference;
-  $: if (typeof document !== 'undefined') {
+  let locale = $derived<Locale>(localePreference === 'system' ? systemLocale : localePreference);
+  let resolvedTheme = $derived<Theme>(themePreference === 'system' ? systemTheme : themePreference);
+  let t = $derived(locale === 'zh' ? zh : en);
+  let builtinLibraries = $derived(libraries.filter((item) => !item.removable));
+  let importedLibraries = $derived(libraries.filter((item) => item.removable));
+  let target = $derived(snapshot.target);
+  let expected = $derived(characters(snapshot.target));
+  let selectedPhonetic = $derived(snapshot.word ? pronunciationPreference === 'uk' ? snapshot.word.ukphone : snapshot.word.usphone : '');
+  let selectedPhoneticLabel = $derived(pronunciationPreference === 'uk' ? t.ukPhone : t.usPhone);
+  let chapterTotals = $derived(summarizeChapter(Object.values(chapterWords)));
+  let displayAccuracy = $derived(chapterPaused ? chapterTotals.accuracy : stats.accuracy);
+  let displayElapsed = $derived(elapsed);
+  let displayWpm = $derived.by(() => {
+    let correct = stats.correct;
+    for (const [index, result] of Object.entries(chapterWords)) {
+      if (Number(index) === snapshot.itemIndex) continue;
+      correct += result.correct;
+    }
+    const cpm = elapsed >= 1000 ? Math.round(correct * 60000 / elapsed) : 0;
+    return Math.round(cpm / 5);
+  });
+  let chapterResultTitle = $derived(snapshot.chapterTitle
+    ? snapshot.chapterTitle + ' · ' + t.chapterComplete
+    : locale === 'zh'
+      ? t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterSuffix + t.chapterComplete
+      : t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterComplete);
+  let chapterResultUnit = $derived(snapshot.mode === 'sentence' ? t.chapterSentences : t.chapterWords);
+  let typed = $derived(characters(committedDraft));
+  let filteredFonts = $derived(systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase())));
+  let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
+  let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
+  let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
+  let celebratedChapter = '';
+
+  $effect(() => {
+    if (typeof document === 'undefined') return;
     document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
     document.documentElement.dataset.theme = resolvedTheme;
-  }
-  $: target = passages[textLanguage][passageIndex % passages[textLanguage].length];
-  $: expected = characters(target);
-  $: typed = characters(committedDraft);
-  $: filteredFonts = systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase()));
-  $: running = view === 'practice' && focused && practice.attempts > 0 && !stats.done;
-  $: if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
+  });
+  $effect(() => {
+    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
+  });
+  $effect(() => {
+    if (view === 'settings' && !agentsLoaded) void loadAgents();
+  });
+  $effect(() => {
+    const finished = view === 'practice' && chapterPaused;
+    if (!finished) {
+      celebratedChapter = '';
+      return;
+    }
+    const key = snapshot.collectionId + ':' + snapshot.chapterIndex;
+    const canvas = celebrationCanvas;
+    if (!canvas || celebratedChapter === key) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    celebratedChapter = key;
+    const burst = confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
+    void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+  });
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
+    let unlistenFocus: (() => void) | undefined;
     const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
     const syncSystemTheme = () => { systemTheme = colorScheme.matches ? 'dark' : 'light'; };
     const syncSystemLocale = () => { systemLocale = detectSystemLocale(); };
     syncSystemTheme();
     syncSystemLocale();
 
-    const stop = () => { focused = false; };
+    const leaveApp = () => {
+      focused = false;
+      pausePractice();
+    };
+    const releaseSurface = () => {
+      if (!surfacePressed) return;
+      surfacePressed = false;
+      focusInput();
+    };
     const resume = () => {
       syncSystemTheme();
       syncSystemLocale();
-      if (view === 'practice' && document.activeElement === input) focused = true;
+      if (view === 'practice') focusInput();
     };
-    const hidden = () => { if (document.hidden) stop(); else resume(); };
+    const hidden = () => { if (document.hidden) leaveApp(); else resume(); };
 
-    window.addEventListener('blur', stop);
+    window.addEventListener('blur', leaveApp);
+    window.addEventListener('pointerup', releaseSurface);
     window.addEventListener('focus', resume);
     window.addEventListener('languagechange', syncSystemLocale);
     document.addEventListener('visibilitychange', hidden);
+    const startFromKey = (event: KeyboardEvent) => {
+      if (view !== 'practice') return;
+      if (chapterPaused) {
+        if (event.key === 'Enter' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          event.preventDefault();
+          void continueAndStart();
+        }
+        return;
+      }
+      if (practicePhase === 'running') return;
+      if (event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
+      const target = event.target as HTMLElement | null;
+      const practiceButton = target?.closest('.practice-page button');
+      if (practiceButton) {
+        if (event.key === 'Enter' || event.key === ' ') return;
+      } else if (target?.closest('button, select, a, input:not(#typing-capture)')) {
+        return;
+      }
+      event.preventDefault();
+      beginPractice();
+    };
+    const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (view === 'settings') {
+        event.preventDefault();
+        void navigateBack();
+        return;
+      }
+      if (view === 'practice' && practicePhase === 'running') {
+        event.preventDefault();
+        pausePractice();
+      }
+    };
+    preloadKeySound(sound.pack);
+    const primeKeySound = () => unlockKeySound();
+    window.addEventListener('pointerdown', primeKeySound, true);
+    window.addEventListener('keydown', primeKeySound, true);
+    window.addEventListener('keydown', startFromKey);
+    window.addEventListener('keydown', handleGlobalKeydown);
     colorScheme.addEventListener?.('change', syncSystemTheme);
     const fontLayoutChanged = () => { void updateCaret(); };
     resizeObserver = new ResizeObserver(fontLayoutChanged);
     document.fonts.addEventListener('loadingdone', fontLayoutChanged);
-    void tick().then(() => focusInput());
+    void loadPractice().then(() => tick()).then(() => focusInput());
 
     if (appWindow) {
-      void appWindow.isAlwaysOnTop().then(value => { pinned = value; });
+      const pinRead = pinGeneration;
+      void appWindow.isAlwaysOnTop().then(value => {
+        if (pinRead === pinGeneration) pinned = value;
+      });
+      void appWindow.onFocusChanged(({ payload: active }) => {
+        if (!active) pausePractice();
+      }).then(unlisten => { unlistenFocus = unlisten; });
     }
 
     const updateClock = () => {
       if (!running) return;
       const now = performance.now();
       elapsed = clock.total + now - (clock.since ?? now);
-      void refreshCore(committedDraft, elapsed);
+      void refreshCore(committedDraft, itemElapsed());
     };
 
     timer = setInterval(updateClock, 200);
     return () => {
       if (timer) clearInterval(timer);
-      window.removeEventListener('blur', stop);
+      window.removeEventListener('blur', leaveApp);
+      window.removeEventListener('pointerup', releaseSurface);
       window.removeEventListener('focus', resume);
       window.removeEventListener('languagechange', syncSystemLocale);
       document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('pointerdown', primeKeySound, true);
+      window.removeEventListener('keydown', primeKeySound, true);
+      window.removeEventListener('keydown', startFromKey);
+      window.removeEventListener('keydown', handleGlobalKeydown);
       colorScheme.removeEventListener?.('change', syncSystemTheme);
       resizeObserver?.disconnect();
       document.fonts.removeEventListener('loadingdone', fontLayoutChanged);
+      unlistenFocus?.();
     };
   });
 
-  $: if (running && clock.since === null) {
-    clock.since = performance.now();
-  } else if (!running && clock.since !== null) {
-    clock.total += performance.now() - clock.since;
-    clock.since = null;
-    elapsed = clock.total;
-  }
+  $effect(() => {
+    if (running && clock.since === null) {
+      clock.since = performance.now();
+    } else if (!running && clock.since !== null) {
+      clock.total += performance.now() - clock.since;
+      clock.since = null;
+      elapsed = clock.total;
+    }
+  });
 
   function detectSystemLocale(): Locale {
     const language = typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : 'en';
@@ -166,9 +320,196 @@
     try { localStorage.setItem('typelet.theme.preference', value); } catch { /* browser storage may be unavailable */ }
   }
 
+  function loadPronunciationPreference(): PronunciationPreference {
+    try {
+      return localStorage.getItem('typelet.word.pronunciation') === 'us' ? 'us' : 'uk';
+    } catch { return 'uk'; }
+  }
+
+  function persistPronunciationPreference(value: PronunciationPreference) {
+    pronunciationPreference = value;
+    try { localStorage.setItem('typelet.word.pronunciation', value); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function loadAutoAdvanceWords(): boolean {
+    try {
+      return localStorage.getItem('typelet.word.autoAdvance') !== 'false';
+    } catch { return true; }
+  }
+
+  function persistAutoAdvanceWords(value: boolean) {
+    if (autoAdvanceWords === value) return;
+    autoAdvanceWords = value;
+    try { localStorage.setItem('typelet.word.autoAdvance', String(value)); } catch { /* browser storage may be unavailable */ }
+    if (value) speakVisibleWord(snapshot, true);
+    else stopPronunciation();
+  }
+
+  function speechLevel() {
+    return sound.speechVolume / 100;
+  }
+
+  function rememberSound(next: SoundPreference) {
+    sound = next;
+    persistSoundPreference(next);
+    if (activeAudio) activeAudio.volume = speechLevel();
+  }
+
+  let keyPreviewAt = 0;
+  function previewKeySound(force = false) {
+    if (!sound.keyEnabled || sound.keyVolume <= 0) return;
+    const now = performance.now();
+    if (!force && now - keyPreviewAt < 80) return;
+    keyPreviewAt = now;
+    playKeySound(sound.pack, sound.keyVolume);
+  }
+
+  function setSpeechVolume(event: Event) {
+    const speechVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
+    if (!Number.isFinite(speechVolume)) return;
+    rememberSound({ ...sound, speechVolume: Math.max(0, Math.min(100, speechVolume)) });
+    if (sound.speechVolume <= 0) stopPronunciation();
+  }
+
+  function setKeyEnabled(enabled: boolean) {
+    rememberSound({ ...sound, keyEnabled: enabled });
+    if (enabled) previewKeySound(true);
+  }
+
+  function setKeyVolume(event: Event) {
+    const keyVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
+    if (!Number.isFinite(keyVolume)) return;
+    rememberSound({ ...sound, keyVolume: Math.max(0, Math.min(100, keyVolume)) });
+    previewKeySound();
+  }
+
+  function setKeyPack(event: Event) {
+    const pack = (event.currentTarget as HTMLSelectElement).value;
+    if (!keySoundPacks.some(item => item.id === pack)) return;
+    rememberSound({ ...sound, pack });
+    previewKeySound(true);
+  }
+
+  function playPracticeKey(previous: string, next: string) {
+    if (!sound.keyEnabled || sound.keyVolume <= 0 || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
+    if (next.length <= previous.length || !next.startsWith(previous)) return;
+    playKeySound(sound.pack, sound.keyVolume);
+  }
+
+
   function selectFont(value: string) {
     fontPreference = value;
     persistFontPreference(value);
+  }
+
+  function previewAgents(): AgentSummary[] {
+    return [
+      { id: 'codex', name: 'Codex', enabled: localStorage.getItem('typelet.agent.codex') === 'true', supported: true, configPath: '~/.codex/config.toml', format: 'TOML', event: 'UserPromptSubmit' },
+      { id: 'cursor', name: 'Cursor', enabled: localStorage.getItem('typelet.agent.cursor') === 'true', supported: true, configPath: '~/.cursor/hooks.json', format: 'JSON', event: 'beforeSubmitPrompt' },
+      { id: 'dsh', name: 'DeepSeek Harness (dsh)', enabled: false, supported: false, configPath: '', format: 'Plugin', event: '待确认' },
+    ];
+  }
+
+  async function loadAgents() {
+    agentsLoaded = true;
+    agentError = '';
+    try {
+      if (isTauri) {
+        agents = await invoke<AgentSummary[]>('get_agents_config');
+      } else {
+        agents = previewAgents();
+      }
+    } catch (error) {
+      agentError = String(error);
+    }
+  }
+
+  async function toggleAgent(agent: AgentSummary) {
+    if (agentLoading) return;
+    if (!agent.supported) return;
+    agentLoading = true;
+    agentError = '';
+    const enabled = !agent.enabled;
+    try {
+      if (isTauri) {
+        agents = await invoke<AgentSummary[]>('set_agent_enabled', { agent: agent.id, enabled });
+      } else {
+        localStorage.setItem('typelet.agent.' + agent.id, String(enabled));
+        agents = agents.map(item => item.id === agent.id ? { ...item, enabled } : item);
+      }
+    } catch (error) {
+      agentError = String(error);
+    } finally {
+      agentLoading = false;
+    }
+  }
+
+
+  function currentSettingsPage() {
+    if (selectedAgent) return 'agent:' + selectedAgent;
+    if (libraryOpen) return 'library';
+    return 'settings';
+  }
+
+  function rememberSettingsScroll() {
+    settingsScroll.save(currentSettingsPage(), settingsPage);
+  }
+
+  async function restoreSettingsScroll(id = currentSettingsPage()) {
+    await tick();
+    settingsScroll.apply(id, settingsPage);
+  }
+
+  async function openAgentDetail(agent: AgentSummary) {
+    rememberSettingsScroll();
+    selectedAgent = agent.id;
+    agentDetail = null;
+    agentDetailDraft = '';
+    agentDetailLoading = true;
+    agentError = '';
+    await restoreSettingsScroll('agent:' + agent.id);
+    backButton?.focus({ preventScroll: true });
+    try {
+      if (isTauri) {
+        agentDetail = await invoke<AgentDetail>('get_agent_detail', { agent: agent.id });
+      } else {
+        agentDetail = { ...agent, editable: agent.supported, content: agent.supported ? JSON.stringify({ command: 'nohup typelet >/dev/null 2>&1 </dev/null &' }, null, 2) : '', note: agent.supported ? '网页预览只显示模拟配置。' : 'DeepSeek Harness 的接入方式待确认。' };
+      }
+      agentDetailDraft = agentDetail?.content ?? '';
+    } catch (error) {
+      agentError = String(error);
+    } finally {
+      agentDetailLoading = false;
+    }
+  }
+
+  function closeAgentDetail() {
+    rememberSettingsScroll();
+    selectedAgent = null;
+    agentDetail = null;
+    agentDetailDraft = '';
+    agentError = '';
+    void restoreSettingsScroll('settings');
+  }
+
+  async function saveAgentDetail() {
+    if (!agentDetail || !agentDetail.editable || agentDetailSaving) return;
+    agentDetailSaving = true;
+    agentError = '';
+    try {
+      if (isTauri) {
+        agentDetail = await invoke<AgentDetail>('save_agent_detail', { agent: agentDetail.id, content: agentDetailDraft });
+        agents = await invoke<AgentSummary[]>('get_agents_config');
+      } else {
+        agentDetail = { ...agentDetail, content: agentDetailDraft, enabled: true };
+        agents = agents.map(item => item.id === agentDetail?.id ? { ...item, enabled: true } : item);
+      }
+      agentDetailDraft = agentDetail.content;
+    } catch (error) {
+      agentError = String(error);
+    } finally {
+      agentDetailSaving = false;
+    }
   }
 
   async function loadFonts() {
@@ -186,14 +527,303 @@
     input?.focus({ preventScroll: true });
   }
 
+  function practiceButton(event: Event) {
+    if (view !== 'practice') return null;
+    const target = event.target;
+    if (!(target instanceof Element)) return null;
+    return target.closest('.practice-page button');
+  }
+
+  function restorePracticeTypingFocus(event: MouseEvent) {
+    const control = practiceButton(event);
+    if (!control) return;
+    if (event.type === 'mousedown') {
+      event.preventDefault();
+      return;
+    }
+    if (document.activeElement === control) control.blur();
+    focusInput();
+  }
+
+  type WebProgress = { mode: PracticeMode; sentenceId: string; wordBookId: string; sentenceIndex: number; wordIndex: number };
+
+  function defaultWebProgress(): WebProgress {
+    return { mode: 'sentence', sentenceId: 'builtin:movie-lines', wordBookId: 'preview:cet4', sentenceIndex: 0, wordIndex: 0 };
+  }
+
+  function loadWebProgress(): WebProgress {
+    const base = defaultWebProgress();
+    try {
+      const parsed = JSON.parse(localStorage.getItem('typelet.practice.progress') ?? '') as Partial<WebProgress>;
+      const index = (value: unknown) => Number.isInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+      return {
+        mode: parsed.mode === 'word' || parsed.mode === 'sentence' ? parsed.mode : base.mode,
+        sentenceId: typeof parsed.sentenceId === 'string' && parsed.sentenceId ? parsed.sentenceId : base.sentenceId,
+        wordBookId: typeof parsed.wordBookId === 'string' && parsed.wordBookId ? parsed.wordBookId : base.wordBookId,
+        sentenceIndex: index(parsed.sentenceIndex),
+        wordIndex: index(parsed.wordIndex),
+      };
+    } catch {
+      return base;
+    }
+  }
+
+  function persistWebProgress(next: PracticeSnapshot) {
+    const previous = loadWebProgress();
+    const progress: WebProgress = {
+      mode: next.mode,
+      sentenceId: next.mode === 'sentence' ? next.collectionId : previous.sentenceId,
+      wordBookId: next.mode === 'word' ? next.collectionId : previous.wordBookId,
+      sentenceIndex: next.mode === 'sentence' ? Math.max(0, next.itemIndex - 1) : previous.sentenceIndex,
+      wordIndex: next.mode === 'word' ? Math.max(0, next.itemIndex - 1) : previous.wordIndex,
+    };
+    try { localStorage.setItem('typelet.practice.progress', JSON.stringify(progress)); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function previewRestoredMode(mode: PracticeMode) {
+    const progress = loadWebProgress();
+    return mode === 'word'
+      ? previewSnapshot('word', progress.wordBookId, progress.wordIndex)
+      : previewSnapshot('sentence', progress.sentenceId, progress.sentenceIndex);
+  }
+
+  async function loadPractice() {
+    try {
+      if (isTauri) {
+        const [nextCatalog, nextSnapshot] = await Promise.all([
+          invoke<ContentCatalogSnapshot>('get_content_catalog'),
+          invoke<PracticeSnapshot>('get_practice_snapshot'),
+        ]);
+        catalog = nextCatalog;
+        applySnapshot(nextSnapshot, true);
+      } else {
+        const progress = loadWebProgress();
+        catalog = previewCatalog(progress.mode, progress.sentenceId, progress.wordBookId);
+        const collectionId = progress.mode === 'word' ? progress.wordBookId : progress.sentenceId;
+        const itemIndex = progress.mode === 'word' ? progress.wordIndex : progress.sentenceIndex;
+        applySnapshot(previewSnapshot(progress.mode, collectionId, itemIndex), true);
+      }
+    } catch (error) {
+      importError = String(error);
+    }
+  }
+
+  function applySnapshot(next: PracticeSnapshot, resetInput: boolean) {
+    snapshot = next;
+    if (resetInput) {
+      draft = next.practice.text;
+      committedDraft = next.practice.text;
+      compositionText = '';
+    }
+    syncChapterSession(next);
+    if (!next.stats.done) autoAdvancedKey = '';
+    handleItemCompletion(next);
+    speakVisibleWord(next);
+    if (!isTauri) persistWebProgress(next);
+  }
+
+  function syncChapterSession(next: PracticeSnapshot) {
+    const key = next.collectionId + ':' + next.chapterIndex;
+    if (key === chapterKey) return;
+    chapterKey = key;
+    chapterWords = {};
+    chapterPaused = false;
+  }
+
+  function currentElapsed() {
+    return clock.since === null ? elapsed : clock.total + performance.now() - clock.since;
+  }
+
+  function itemElapsed() {
+    return Math.max(0, currentElapsed() - itemElapsedOrigin);
+  }
+
+  function resetPracticeClock() {
+    clock = { total: 0, since: null };
+    elapsed = 0;
+    itemElapsedOrigin = 0;
+  }
+
+  function rememberCompletedItem(next: PracticeSnapshot) {
+    chapterWords = {
+      ...chapterWords,
+      [next.itemIndex]: {
+        attempts: next.practice.attempts,
+        correctAttempts: next.practice.correctAttempts,
+        correct: next.stats.correct,
+        milliseconds: Math.max(0, Math.round(currentElapsed()) - itemElapsedOrigin),
+      },
+    };
+  }
+
+  function invalidateCompletion() {
+    stopPronunciation();
+    spokenKey = '';
+    spokenState = 'idle';
+  }
+
+  function shouldAutoAdvance(next: PracticeSnapshot) {
+    return next.mode === 'sentence' || autoAdvanceWords;
+  }
+
+  function handleItemCompletion(next: PracticeSnapshot) {
+    if (!next.stats.done) return;
+    const key = next.collectionId + ':' + next.chapterIndex + ':' + next.itemIndex;
+    rememberCompletedItem(next);
+    if (next.isChapterLastItem) {
+      chapterPaused = true;
+      return;
+    }
+    if (!shouldAutoAdvance(next) || autoAdvancedKey === key) return;
+    autoAdvancedKey = key;
+    void restart(true);
+  }
+
+  function waitForAudio(audio: HTMLAudioElement) {
+    return new Promise<void>((resolve) => {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (finishPronunciation === finish) finishPronunciation = undefined;
+        audio.removeEventListener('ended', finish);
+        audio.removeEventListener('error', finish);
+        resolve();
+      };
+      finishPronunciation = finish;
+      audio.addEventListener('ended', finish, { once: true });
+      audio.addEventListener('error', finish, { once: true });
+      window.setTimeout(finish, 1800);
+    });
+  }
+
+  function stopPronunciation() {
+    pronunciationGeneration += 1;
+    const finish = finishPronunciation;
+    finishPronunciation = undefined;
+    finish?.();
+    activeAudio?.pause();
+    activeAudio = undefined;
+    window.speechSynthesis?.cancel();
+  }
+
+  function wordKey(next: PracticeSnapshot) {
+    return next.collectionId + ':' + next.chapterIndex + ':' + next.itemIndex;
+  }
+
+  function markSpoken(key: string, generation: number, started: boolean) {
+    if (generation !== pronunciationGeneration || spokenKey !== key) return;
+    if (started) spokenState = 'started';
+    else {
+      spokenKey = '';
+      spokenState = 'idle';
+    }
+  }
+
+  function startSpokenWord(name: string | undefined, key: string, force = false) {
+    if (!name) return;
+    if (!force && spokenKey === key && spokenState !== 'idle') return;
+    spokenKey = key;
+    spokenState = 'pending';
+    void playPronunciation(name).then(result => markSpoken(key, result.generation, result.started));
+  }
+
+  function speakVisibleWord(next: PracticeSnapshot = snapshot, force = false) {
+    if (view !== 'practice' || practicePhase !== 'running' || !autoAdvanceWords || chapterPaused) return;
+    if (next.mode !== 'word' || !next.word || next.stats.done) return;
+    if (next.practice.text || draft || compositionText) return;
+    startSpokenWord(next.word.name, wordKey(next), force);
+  }
+
+  function beginPractice() {
+    if (chapterPaused || view !== 'practice' || practicePhase === 'running') return;
+    unlockKeySound();
+    practicePhase = 'running';
+    if (snapshot.mode === 'word' && snapshot.word && !snapshot.stats.done) {
+      startSpokenWord(snapshot.word.name, wordKey(snapshot), true);
+    }
+    focusInput();
+  }
+
+  function pausePractice() {
+    if (practicePhase !== 'running') return;
+    practicePhase = 'paused';
+    stopPronunciation();
+  }
+
+  function togglePractice() {
+    if (practicePhase === 'running') pausePractice();
+    else beginPractice();
+  }
+
+  async function playPronunciation(name: string | undefined): Promise<{ generation: number; started: boolean }> {
+    if (!name) return { generation: pronunciationGeneration, started: false };
+    if (sound.speechVolume <= 0) {
+      stopPronunciation();
+      return { generation: pronunciationGeneration, started: false };
+    }
+    const generation = ++pronunciationGeneration;
+    const finishPrevious = finishPronunciation;
+    finishPronunciation = undefined;
+    finishPrevious?.();
+    activeAudio?.pause();
+    window.speechSynthesis?.cancel();
+    const audioType = pronunciationPreference === 'uk' ? '1' : '2';
+    const audio = new Audio('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(name) + '&type=' + audioType);
+    audio.volume = speechLevel();
+    activeAudio = audio;
+    try {
+      await audio.play();
+      if (generation !== pronunciationGeneration) return { generation, started: false };
+      void waitForAudio(audio);
+      return { generation, started: true };
+    } catch {
+      if (generation !== pronunciationGeneration || activeAudio !== audio) return { generation, started: false };
+      return { generation, started: await speakFallback(name, generation) };
+    }
+  }
+
+  function speakFallback(name: string, generation: number) {
+    const speech = window.speechSynthesis;
+    if (!speech || generation !== pronunciationGeneration) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (started: boolean) => {
+        if (settled) return;
+        settled = true;
+        resolve(started);
+      };
+      const utterance = new SpeechSynthesisUtterance(name);
+      utterance.lang = pronunciationPreference === 'uk' ? 'en-GB' : 'en-US';
+      utterance.volume = speechLevel();
+      utterance.onstart = () => finish(true);
+      utterance.onerror = () => finish(false);
+      window.setTimeout(() => finish(false), 700);
+      try { speech.speak(utterance); } catch { finish(false); }
+    });
+  }
+
+  function replayWord(event: MouseEvent) {
+    event.preventDefault();
+    if (snapshot.word) startSpokenWord(snapshot.word.name, wordKey(snapshot), true);
+  }
+  function markSurfacePress(event: PointerEvent) {
+    const origin = event.target as HTMLElement | null;
+    surfacePressed = view === 'practice' && !origin?.closest('select, button');
+  }
+
   function handleFocus() {
     focused = true;
-    if (!composing) input.setSelectionRange(input.value.length, input.value.length);
+    if (input && !composing) input.setSelectionRange(input.value.length, input.value.length);
+    if (spokenState === 'idle') speakVisibleWord();
   }
 
   async function updateCaret(..._changes: unknown[]) {
     await tick();
     if (view !== 'practice' || !textDisplay || !input) return;
+    const previousWordSize = wordFontSize;
+    fitWordFont();
+    if (wordFontSize !== previousWordSize) await tick();
     if (observedDisplay !== textDisplay) {
       resizeObserver?.disconnect();
       resizeObserver?.observe(textDisplay);
@@ -205,86 +835,335 @@
     let character = current.getBoundingClientRect();
     if (character.top < display.top + 8) textDisplay.scrollTop -= display.top + 8 - character.top;
     else if (character.bottom > display.bottom - 8) textDisplay.scrollTop += character.bottom - display.bottom + 8;
+    const passage = textDisplay.closest('.sentence-stack') as HTMLElement | null;
+    if (passage && getComputedStyle(passage).display !== 'contents') {
+      const box = passage.getBoundingClientRect();
+      const caret = current.getBoundingClientRect();
+      if (caret.top < box.top + 8) passage.scrollTop -= box.top + 8 - caret.top;
+      else if (caret.bottom > box.bottom - 8) passage.scrollTop += caret.bottom - box.bottom + 8;
+    }
     character = current.getBoundingClientRect();
     const surface = textDisplay.parentElement!.getBoundingClientRect();
     captureX = Math.max(0, Math.min(character.left - surface.left, surface.width - 2));
     captureY = Math.max(0, Math.min(character.top - surface.top, surface.height - 24));
   }
 
+  function fitWordFont() {
+    if (snapshot.mode !== 'word' || !textDisplay) return;
+    const stage = textDisplay.closest('.word-stage') as HTMLElement | null;
+    const available = stage?.clientWidth ?? 0;
+    if (available < 40) return;
+    const maxSize = 46;
+    const minSize = 16;
+    const previousWidth = textDisplay.style.width;
+    const previousMaxWidth = textDisplay.style.maxWidth;
+    textDisplay.style.width = 'max-content';
+    textDisplay.style.maxWidth = 'none';
+    const styleSize = parseFloat(getComputedStyle(textDisplay).fontSize);
+    const natural = textDisplay.scrollWidth * maxSize / styleSize;
+    textDisplay.style.width = previousWidth;
+    textDisplay.style.maxWidth = previousMaxWidth;
+    if (!styleSize || !natural) return;
+    const limit = Math.max(1, available - 12);
+    const fitted = natural <= limit ? maxSize : Math.max(minSize, Math.min(maxSize, Math.floor(maxSize * limit / natural)));
+    if (fitted !== wordFontSize) wordFontSize = fitted;
+  }
+
   async function refreshCore(value: string, milliseconds: number) {
     const id = ++requestId;
-    let snapshot: Snapshot;
+    let nextSnapshot: PracticeSnapshot;
 
     if (isTauri) {
-      snapshot = await invoke<Snapshot>('typing_snapshot', {
-        previous: practice,
+      nextSnapshot = await invoke<PracticeSnapshot>('typing_snapshot', {
         value,
-        target,
         milliseconds: Math.round(milliseconds),
       });
     } else {
-      const nextPractice = browserUpdatePractice(practice, value, target);
-      snapshot = { practice: nextPractice, stats: browserStatistics(nextPractice, target, milliseconds) };
+      nextSnapshot = previewUpdate(snapshot, value, milliseconds);
     }
 
     if (id === requestId) {
-      practice = snapshot.practice;
-      stats = snapshot.stats;
+      applySnapshot(nextSnapshot, false);
     }
   }
 
   function handleInput(event: Event) {
+    if (practicePhase !== 'running') {
+      if (input && input.value !== draft) input.value = draft;
+      return;
+    }
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     draft = value;
     if (!composing) {
+      const previous = committedDraft;
       committedDraft = value;
-      void refreshCore(value, elapsed);
-      input.setSelectionRange(value.length, value.length);
+      playPracticeKey(previous, value);
+      void refreshCore(value, itemElapsed());
+      input?.setSelectionRange(value.length, value.length);
     }
   }
 
   function handleCompositionEnd(event: CompositionEvent) {
+    if (practicePhase !== 'running') {
+      composing = false;
+      compositionText = '';
+      if (input && input.value !== draft) input.value = draft;
+      return;
+    }
     composing = false;
     compositionText = '';
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     draft = value;
+    const previous = committedDraft;
     committedDraft = value;
-    void refreshCore(value, elapsed);
+    playPracticeKey(previous, value);
+    void refreshCore(value, itemElapsed());
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.isComposing || composing || event.keyCode === 229 || event.repeat) return;
-    const complete = committedDraft.normalize('NFC') === target.normalize('NFC');
+    if (event.repeat) return;
+    if (event.key === 'Escape') return;
+    if (event.key === 'Enter' && chapterPaused) {
+      event.preventDefault();
+      if (!snapshot.isLastItem) void continueAndStart();
+      return;
+    }
+    if (practicePhase !== 'running') {
+      if (chapterPaused || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
+      event.preventDefault();
+      beginPractice();
+      return;
+    }
+    if (event.isComposing || composing || event.keyCode === 229) return;
+    speakVisibleWord(snapshot, spokenState !== 'started');
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (complete) restart(true);
+      const reachedEnd = snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length;
+      if (chapterPaused || !stats.done && !reachedEnd) return;
+      if (snapshot.isLastItem) {
+        chapterPaused = true;
+        return;
+      }
+      if (snapshot.isChapterLastItem && stats.done) return;
+      if (shouldAutoAdvance(snapshot) && stats.done) return;
+      void restart(true);
     }
     if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) event.preventDefault();
   }
 
-  function restart(next = false, language = textLanguage) {
-    const previousLanguage = textLanguage;
+  async function restart(next = false) {
+    const keepChapterClock = !(next && snapshot.isChapterLastItem);
+    invalidateCompletion();
     requestId += 1;
-    clock = { total: 0, since: null };
+    if (keepChapterClock) itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
+    else resetPracticeClock();
     composing = false;
     compositionText = '';
-    elapsed = 0;
     draft = '';
     committedDraft = '';
-    practice = freshPractice();
-    stats = emptyStatistics;
-    textLanguage = language;
-    passageIndex = next ? passageIndex + 1 : language !== previousLanguage ? 0 : passageIndex;
-    void tick().then(() => focusInput());
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>(next ? 'advance_practice' : 'reset_practice')
+        : next ? previewAdvance(snapshot) : previewReset(snapshot);
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function changeMode(mode: PracticeMode) {
+    if (snapshot.mode === mode) return;
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_practice_mode', { mode })
+        : previewRestoredMode(mode);
+      if (isTauri) catalog = await invoke<ContentCatalogSnapshot>('get_content_catalog');
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function changeCollection(id: string) {
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    importError = '';
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>(snapshot.mode === 'sentence' ? 'select_article' : 'select_word_book', { id })
+        : previewSelectCollection(snapshot, id);
+      if (isTauri) catalog = await invoke<ContentCatalogSnapshot>('get_content_catalog');
+      else {
+        const key = snapshot.mode === 'sentence' ? 'articles' : 'wordBooks';
+        catalog = { ...catalog, [key]: catalog[key].map(item => ({ ...item, selected: item.id === id })) };
+      }
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function openLibrary() {
+    importError = '';
+    rememberSettingsScroll();
+    libraryOpen = true;
+    await restoreSettingsScroll('library');
+  }
+
+  function closeLibrary() {
+    rememberSettingsScroll();
+    libraryOpen = false;
+    void restoreSettingsScroll('settings');
+  }
+
+  async function selectLibrary(id: string) {
+    if (id !== snapshot.collectionId) await changeCollection(id);
+    if (!importError) closeLibrary();
+  }
+
+  async function removeLibrary(id: string) {
+    if (!confirm(t.removeLibraryConfirm)) return;
+    if (!isTauri) return;
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    try {
+      const next = await invoke<{ catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot }>(snapshot.mode === 'sentence' ? 'remove_article' : 'remove_word_book', { id });
+      catalog = next.catalog;
+      applySnapshot(next.snapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+  }
+
+  async function changeChapter(event: Event) {
+    const chapter = Number((event.currentTarget as HTMLSelectElement).value);
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    draft = '';
+    committedDraft = '';
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_word_chapter', { chapter })
+        : previewSelectChapter(snapshot, chapter);
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function retryChapter() {
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    composing = false;
+    compositionText = '';
+    draft = '';
+    committedDraft = '';
+    chapterKey = '';
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_word_chapter', { chapter: snapshot.chapterIndex - 1 })
+        : previewSelectChapter(snapshot, snapshot.chapterIndex - 1);
+      applySnapshot(nextSnapshot, true);
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function continueAfterChapter() {
+    await continueAndStart();
+  }
+
+  async function continueAndStart() {
+    if (chapterContinuation || !chapterPaused || snapshot.isLastItem) return;
+    chapterContinuation = true;
+    practicePhase = 'running';
+    try {
+      await restart(true);
+    } finally {
+      chapterContinuation = false;
+    }
+  }
+
+  function formatDuration(milliseconds: number) {
+    const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+    return String(Math.floor(totalSeconds / 60)).padStart(2, '0') + ':' + String(totalSeconds % 60).padStart(2, '0');
+  }
+
+  async function importContent(kind: 'article' | 'wordBook') {
+    if (!isTauri || importLoading) return;
+    importLoading = true;
+    importMessage = '';
+    importError = '';
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [{ name: kind === 'article' ? 'UTF-8 text' : 'UTF-8 TSV', extensions: kind === 'article' ? ['txt'] : ['tsv', 'txt'] }],
+      });
+      if (typeof selected !== 'string') return;
+      const report = await invoke<ImportReport>(kind === 'article' ? 'preview_article' : 'preview_word_book', { path: selected });
+      pendingImport = { kind, path: selected, report };
+    } catch (error) {
+      importError = String(error);
+    } finally {
+      importLoading = false;
+    }
+  }
+
+  async function confirmImport() {
+    if (!pendingImport || importLoading) return;
+    importLoading = true;
+    importError = '';
+    try {
+      const result = await invoke<ImportResult>(pendingImport.kind === 'article' ? 'import_article' : 'import_word_book', { path: pendingImport.path });
+      catalog = result.catalog;
+      applySnapshot(result.snapshot, true);
+      importMessage = result.report.title + ' · ' + result.report.count + (pendingImport.kind === 'wordBook' ? ' · ' + t.duplicates + ': ' + result.report.duplicateCount : '');
+      pendingImport = null;
+    } catch (error) {
+      importError = String(error);
+    } finally {
+      importLoading = false;
+    }
+  }
+
+  function cancelImport() {
+    pendingImport = null;
+    importError = '';
   }
 
   async function togglePinned() {
     if (!appWindow) return;
+    const next = !pinned;
+    pinGeneration += 1;
+    pinned = next;
     try {
-      pinned = !pinned;
-      await appWindow.setAlwaysOnTop(pinned);
+      await appWindow.setAlwaysOnTop(next);
+      if (next) {
+        await appWindow.unminimize().catch(() => {});
+        await appWindow.setFocus().catch(() => {});
+      }
     } catch {
-      pinned = !pinned;
+      pinGeneration += 1;
+      pinned = !next;
     }
   }
 
@@ -299,15 +1178,36 @@
 
   async function openSettings() {
     focused = false;
+    libraryOpen = false;
     view = 'settings';
     if (!fontsLoaded) void loadFonts();
+    if (!agentsLoaded) void loadAgents();
     await tick();
-    backButton?.focus();
+    settingsScroll.apply('settings', settingsPage);
+    backButton?.focus({ preventScroll: true });
   }
   async function closeSettings() {
+    rememberSettingsScroll();
     view = 'practice';
+    libraryOpen = false;
+    selectedAgent = null;
+    agentDetail = null;
+    agentDetailDraft = '';
+    agentError = '';
     await tick();
     focusInput();
+  }
+
+  async function navigateBack() {
+    if (selectedAgent) {
+      closeAgentDetail();
+      return;
+    }
+    if (libraryOpen) {
+      closeLibrary();
+      return;
+    }
+    if (view === 'settings') await closeSettings();
   }
 </script>
 
@@ -315,11 +1215,11 @@
   <title>{t.brand} · {t.subtitle}</title>
 </svelte:head>
 
-<section class="widget" style:--practice-font={fontStack(fontPreference)}>
+<section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
   <header class="global-nav" role="presentation" onmousedown={dragWindow}>
     <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
     <div class="window-actions">
-      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? closeSettings() : openSettings()}>
+      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? navigateBack() : openSettings()}>
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 3 .5-1h3l.5 1 .5 1 1 .5 1-.5 2 2-.5 1 .5 1 1 .5 1 .5v3l-1 .5-1 .5-.5 1 .5 1-2 2-1-.5-1 .5-.5 1-.5 1h-3l-.5-1-.5-1-1-.5-1 .5-2-2 .5-1-.5-1-1-.5-1-.5v-3l1-.5 1-.5.5-1-.5-1 2-2 1 .5 1-.5.5-1Z" /><circle cx="10" cy="10" r="2.5" /></svg>
       </button>
       {#if isTauri}
@@ -333,9 +1233,93 @@
   </header>
 
   {#if view === 'settings'}
-    <main class="settings-page">
+    <main class="settings-page" bind:this={settingsPage}>
+      {#if selectedAgent}
+        <div class="settings-heading">
+          <button bind:this={backButton} class="back-button" aria-label={t.agentBack} title={t.agentBack} onclick={navigateBack}>←</button>
+          <h1>{agentDetail?.name ?? t.agentLoading}</h1>
+        </div>
+        <section class="settings-group agent-detail" aria-label={t.agentDetail}>
+          {#if agentDetailLoading}
+            <p class="agent-note">{t.agentLoading}</p>
+          {:else if agentDetail}
+            <p class="agent-note">{agentDetail.event}</p>
+            <div class="detail-meta"><span>{t.agentConfigPath}</span><code>{agentDetail.configPath || t.agentUnavailable}</code></div>
+            <div class="detail-meta"><span>{t.agentFormat}</span><code>{agentDetail.format}</code></div>
+            <p class="agent-note">{agentDetail.note}</p>
+            {#if agentDetail.editable}
+              <textarea class="agent-editor" aria-label={t.agentEditor} bind:value={agentDetailDraft} spellcheck="false"></textarea>
+              <div class="detail-actions"><button class="secondary" onclick={closeAgentDetail}>{t.cancel}</button><button class="primary" disabled={agentDetailSaving} onclick={saveAgentDetail}>{agentDetailSaving ? t.saving : t.save}</button></div>
+            {:else}
+              <p class="agent-note">{t.agentUnavailable}</p>
+            {/if}
+          {/if}
+          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
+        </section>
+      {:else if libraryOpen}
+        <div class="settings-heading">
+          <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
+          <h1>{t.library}</h1>
+        </div>
+        <p class="library-intro">{t.libraryHint}</p>
+        {#if builtinLibraries.length}
+          {#if importedLibraries.length}<h2 class="library-heading">{t.libraryBuiltin}</h2>{/if}
+          <section class="settings-group" aria-label={t.libraryBuiltin}>
+            {#each builtinLibraries as item (item.id)}
+              <div class="library-row">
+                <button class="library-main" onclick={() => selectLibrary(item.id)}>
+                  <strong>{item.title}</strong>
+                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
+                </button>
+                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
+              </div>
+            {/each}
+          </section>
+        {/if}
+        {#if importedLibraries.length}
+          <h2 class="library-heading">{t.libraryImported}</h2>
+          <section class="settings-group" aria-label={t.libraryImported}>
+            {#each importedLibraries as item (item.id)}
+              <div class="library-row">
+                <button class="library-main" onclick={() => selectLibrary(item.id)}>
+                  <strong>{item.title}</strong>
+                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
+                </button>
+                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
+                <button class="library-remove" aria-label={t.removeLibrary + ' ' + item.title} onclick={() => removeLibrary(item.id)}>{t.removeLibrary}</button>
+              </div>
+            {/each}
+          </section>
+        {/if}
+        {#if isTauri}
+          <div class="detail-actions">
+            {#if snapshot.mode === 'sentence'}
+              <button class="secondary" disabled={importLoading} onclick={() => importContent('article')}>{t.importArticle}</button>
+            {:else}
+              <button class="secondary" disabled={importLoading} onclick={() => importContent('wordBook')}>{t.importWordBook}</button>
+            {/if}
+          </div>
+        {:else}
+          <p class="agent-note">{t.previewImportHint}</p>
+        {/if}
+        {#if pendingImport}
+          <div class="import-preview">
+            <strong>{pendingImport.report.title}</strong>
+            <span>{t.importPreview}: {pendingImport.report.count} · {pendingImport.report.firstItem ?? t.missing}</span>
+            {#if pendingImport.kind === 'wordBook'}<span>{t.duplicates}: {pendingImport.report.duplicateCount}</span>{/if}
+            <div class="detail-actions"><button class="secondary" onclick={cancelImport}>{t.cancel}</button><button class="primary" disabled={importLoading} onclick={() => void confirmImport()}>{t.confirmImport}</button></div>
+          </div>
+        {/if}
+        {#if importMessage}<p class="agent-note" role="status">{importMessage}</p>{/if}
+        {#if importError}<p class="agent-error" role="alert">{importError}</p>{/if}
+        {#if snapshot.mode === 'word'}
+          <p class="agent-note">{t.dictionaryNotice}</p>
+        {:else if libraries.find((item) => item.selected)?.source}
+          <p class="agent-note">{libraries.find((item) => item.selected)?.source}</p>
+        {/if}
+      {:else}
       <div class="settings-heading">
-        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={closeSettings}>←</button>
+        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
         <h1>{t.settingsTitle}</h1>
       </div>
 
@@ -356,6 +1340,76 @@
           <button class:selected={localePreference === 'en'} aria-pressed={localePreference === 'en'} onclick={() => persistLocalePreference('en')}>{t.english}</button>
         </div>
       </section>
+
+      <section class="settings-group content-settings" aria-label={t.contentSettings}>
+        <div class="settings-copy"><strong>{t.practiceMode}</strong><span>{t.contentHint}</span></div>
+        <div class="segmented-control two-options" role="group" aria-label={t.practiceMode}>
+          <button class:selected={snapshot.mode === 'sentence'} aria-pressed={snapshot.mode === 'sentence'} onclick={() => changeMode('sentence')}>{t.sentenceMode}</button>
+          <button class:selected={snapshot.mode === 'word'} aria-pressed={snapshot.mode === 'word'} onclick={() => changeMode('word')}>{t.wordMode}</button>
+        </div>
+        {#if snapshot.mode === 'word'}
+          <div class="setting-block">
+            <div class="settings-copy"><strong>{t.wordPronunciation}</strong><span>{t.wordPronunciationHint}</span></div>
+            <div class="segmented-control two-options" role="group" aria-label={t.wordPronunciation}>
+              <button class:selected={pronunciationPreference === 'uk'} aria-pressed={pronunciationPreference === 'uk'} onclick={() => persistPronunciationPreference('uk')}>{t.britishPronunciation}</button>
+              <button class:selected={pronunciationPreference === 'us'} aria-pressed={pronunciationPreference === 'us'} onclick={() => persistPronunciationPreference('us')}>{t.americanPronunciation}</button>
+            </div>
+          </div>
+          <div class="setting-row">
+            <div class="settings-copy"><strong>{t.autoAdvanceWords}</strong><span>{t.autoAdvanceWordsHint}</span></div>
+            <button class="agent-switch" class:on={autoAdvanceWords} role="switch" aria-checked={autoAdvanceWords} aria-label={t.autoAdvanceWords} onclick={() => persistAutoAdvanceWords(!autoAdvanceWords)}><span></span></button>
+          </div>
+        {/if}
+        <button class="nav-row" onclick={openLibrary}>
+          <strong>{t.library}</strong>
+          <span class="nav-value">{snapshot.collectionTitle}</span>
+          <span class="chevron" aria-hidden="true">›</span>
+        </button>
+      </section>
+
+
+      <section class="settings-group" aria-label={t.soundSettings}>
+        <div class="settings-copy"><strong>{t.soundSettings}</strong><span>{t.soundSettingsHint}</span></div>
+        <div class="setting-block">
+          <label class="volume-control" style:--volume={sound.speechVolume + '%'}>
+            <span>{t.speechVolume}</span>
+            <input type="range" min="0" max="100" step="1" value={sound.speechVolume} oninput={setSpeechVolume} />
+            <span class="volume-value">{sound.speechVolume}%</span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div class="settings-copy"><strong>{t.keySound}</strong><span>{t.keySoundHint}</span></div>
+          <button type="button" class="agent-switch" class:on={sound.keyEnabled} role="switch" aria-checked={sound.keyEnabled} aria-label={t.keySound} onclick={() => setKeyEnabled(!sound.keyEnabled)}><span></span></button>
+        </div>
+        <div class="setting-block" class:is-disabled={!sound.keyEnabled}>
+          <label class="volume-control" style:--volume={sound.keyVolume + '%'}>
+            <span>{t.keyVolume}</span>
+            <input type="range" min="0" max="100" step="1" value={sound.keyVolume} disabled={!sound.keyEnabled} oninput={setKeyVolume} />
+            <span class="volume-value">{sound.keyVolume}%</span>
+          </label>
+          <label class="pack-control">
+            <span>{t.keySoundPack}</span>
+            <select class="font-select" aria-label={t.keySoundPack} disabled={!sound.keyEnabled} value={sound.pack} onchange={setKeyPack}>
+              {#each keySoundPacks as pack}
+                <option value={pack.id}>{pack.id}</option>
+              {/each}
+            </select>
+          </label>
+        </div>
+      </section>
+
+        <section class="settings-group agent-settings" aria-label={t.agents}>
+          <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
+          {#each agents as agent}
+            <div class="agent-row" class:unsupported={!agent.supported}>
+              <button class="agent-copy agent-open" aria-label={t.agentDetails + ': ' + agent.name} onclick={() => openAgentDetail(agent)}>
+                <strong>{agent.name}</strong><span>{agent.supported ? agent.event + ' · ' + agent.format : t.agentUnavailable}</span>
+              </button>
+              <button class="agent-switch" class:on={agent.enabled} role="switch" aria-checked={agent.enabled} aria-label={agent.name + ' ' + (agent.enabled ? t.enabled : t.disabled)} disabled={!agent.supported || agentLoading} onclick={() => toggleAgent(agent)}><span></span></button>
+            </div>
+          {/each}
+          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
+        </section>
 
       <section class="settings-group font-settings" aria-label={t.font}>
         <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
@@ -378,31 +1432,84 @@
           <button disabled={fontsLoading} onclick={loadFonts}>{t.refresh}</button>
         </div>
       </section>
+      {/if}
     </main>
   {:else}
-    <main class="practice-page">
-      <section class="summary">
-        <div class="stats">
-          <div><strong>{stats.cpm}</strong><span>{t.speed}</span></div>
-          <div><strong>{stats.accuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
-          <div><strong>{String(Math.floor(elapsed / 60000)).padStart(2, '0')}:{String(Math.floor(elapsed / 1000) % 60).padStart(2, '0')}</strong><span>{t.time}</span></div>
-        </div>
-      </section>
-
+    <main class="practice-page" onmousedown={restorePracticeTypingFocus} onclick={restorePracticeTypingFocus}>
       <section class="practice-tile">
         <div class="passage-heading">
-          <select aria-label={t.practiceLanguage} value={textLanguage} onchange={(event) => restart(false, (event.currentTarget as HTMLSelectElement).value as TextLanguage)}>
-            <option value="en">{t.english}</option>
-            <option value="zh">{t.chinese}</option>
-          </select>
+          {#if !chapterPaused}
+            <div class="practice-controls">
+              <button type="button" class="icon-button" aria-label={t.restart} title={t.restart} onclick={() => void restart()}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(12 12) scale(0.72) translate(-12 -12)"><path class="stroke heavy" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path class="stroke heavy" d="M3 3v5h5" /></g></svg>
+              </button>
+              <button type="button" class="icon-button" aria-label={practicePhase === 'running' ? t.pausePractice : t.startPractice} title={practicePhase === 'running' ? t.pausePractice : t.startPractice} onclick={togglePractice}>
+                {#if practicePhase === 'running'}
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9 5.4v13.2M15 5.4v13.2" /></svg>
+                {:else}
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9.2 5.6v12.8L18.4 12 9.2 5.6z" /></svg>
+                {/if}
+              </button>
+            </div>
+          {/if}
+          {#if snapshot.mode === 'word' || snapshot.chapterCount > 1}
+            <div class="word-navigation">
+              <span class="practice-label">{snapshot.collectionTitle}</span>
+              <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
+                {#each Array.from({ length: snapshot.chapterCount }) as _, index}
+                  <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
+                {/each}
+              </select>
+              <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
+            </div>
+          {:else}
+            <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
+          {/if}
         </div>
 
-        <label class="typing-surface" class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
-          <div bind:this={textDisplay} id="passage-text" class="target" aria-label={t.target}>
-            {#each expected as char, index}
-              {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
-            {/each}
-            {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
+
+        <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
+          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:with-gloss={snapshot.mode === 'sentence' && snapshot.translation.length > 0} class:awaiting-start={awaitingStart} class:paused={practicePhase === 'paused' && !chapterPaused}>
+            {#if chapterPaused}
+              <div class="chapter-result" role="status">
+                <p class="chapter-result-title">{chapterResultTitle}</p>
+                <p class="chapter-result-count">{chapterTotals.words} {chapterResultUnit}</p>
+              </div>
+              <div class="chapter-actions">
+                <button class="primary" disabled={snapshot.isLastItem} onclick={() => void continueAfterChapter()}>{snapshot.isLastItem ? t.bookComplete : t.nextChapter}</button>
+                <button class="chapter-retry" onclick={() => void retryChapter()}>{t.retryChapter}</button>
+              </div>
+            {:else}
+            <div class="sentence-stack">
+              <div class="word-row">
+                <div class="word-slot">
+                  <div bind:this={textDisplay} id="passage-text" class="target" class:word-target={snapshot.mode === 'word'} aria-label={t.target} style:font-size={snapshot.mode === 'word' ? wordFontSize + 'px' : undefined}>
+                {#each expected as char, index}
+                  {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
+                {/each}
+                {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
+                  </div>
+                </div>
+              </div>
+              {#if snapshot.mode === 'sentence' && snapshot.translation}
+                <p class="sentence-gloss">{snapshot.translation}</p>
+              {/if}
+            </div>
+            {#if awaitingStart}
+              <p class="start-hint">{t.pressAnyKey}</p>
+            {:else if practicePhase === 'paused' && !chapterPaused}
+              <p class="start-hint">{t.pressAnyKeyContinue}</p>
+            {/if}
+            {#if snapshot.mode === 'word' && snapshot.word}
+              <div class="phonetic-row">
+                <p class="word-phonetic">{selectedPhonetic ? selectedPhoneticLabel + ' ' + selectedPhonetic : t.missing}</p>
+                <button type="button" class="speaker speaker-inline" aria-label={t.replayPronunciation} title={t.replayPronunciation} onclick={replayWord}>
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
+                </button>
+              </div>
+              <p class="word-translation">{snapshot.word.trans.length ? snapshot.word.trans.join('；') : t.missingTranslation}</p>
+            {/if}
+            {/if}
           </div>
           <textarea bind:this={input} id="typing-capture" class="typing-capture" aria-label={t.input} aria-describedby="passage-text" style:left={`${captureX}px`} style:top={`${captureY}px`} value={draft} spellcheck="false" autocapitalize="off" autocorrect="off" readonly={stats.done}
           onfocus={handleFocus} onblur={() => focused = false}
@@ -410,10 +1517,16 @@
           oncompositionstart={() => { composing = true; compositionText = ''; }} oncompositionupdate={(event) => compositionText = event.data}
           oncompositionend={handleCompositionEnd} oninput={handleInput} onkeydown={handleKeydown}></textarea>
         </label>
-        <progress class="practice-progress" aria-label={t.progress} value={stats.percent} max="100"></progress>
       </section>
-
-      <footer><button class="secondary" onclick={() => restart()}>{t.restart}</button><button class="primary" title={stats.done ? t.enterNext : t.next} onclick={() => restart(true)}>{t.next}{#if stats.done}<kbd>↵</kbd>{:else}<span aria-hidden="true">→</span>{/if}</button></footer>
+      <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' || snapshot.chapterCount > 1 ? snapshot.chapterProgress : stats.percent} max="100"></progress>
+      <section class="summary" class:chapter-paused={chapterPaused}>
+        <div class="stats">
+          <div><strong>{displayWpm}</strong><span>{t.speed}</span></div>
+          <div><strong>{displayAccuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
+          <div><strong>{formatDuration(displayElapsed)}</strong><span>{t.time}</span></div>
+        </div>
+      </section>
     </main>
   {/if}
+  <canvas bind:this={celebrationCanvas} class="celebration" aria-hidden="true"></canvas>
 </section>
