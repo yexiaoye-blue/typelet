@@ -45,6 +45,7 @@
   let committedDraft = '';
   let compositionText = '';
   let focused = false;
+  let practicePaused = false;
   let elapsed = 0;
   let pinned = false;
   let composing = false;
@@ -76,7 +77,7 @@
   $: expected = characters(target);
   $: typed = characters(committedDraft);
   $: filteredFonts = systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase()));
-  $: running = view === 'practice' && focused && practice.attempts > 0 && !stats.done;
+  $: running = view === 'practice' && !practicePaused && focused && practice.attempts > 0 && !stats.done;
   $: if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
 
   onMount(() => {
@@ -91,12 +92,28 @@
     const resume = () => {
       syncSystemTheme();
       syncSystemLocale();
-      if (view === 'practice' && document.activeElement === input) focused = true;
+      if (view === 'practice' && !practicePaused && document.activeElement === input) focused = true;
     };
     const hidden = () => { if (document.hidden) stop(); else resume(); };
+    const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+        if (view === 'settings') {
+          event.preventDefault();
+          void navigateBack();
+          return;
+        }
+        if (view === 'practice' && focused && practice.attempts > 0 && !stats.done) {
+          event.preventDefault();
+          pausePractice();
+          return;
+        }
+      }
+      if (view === 'practice') resumePracticeFromKey(event);
+    };
 
     window.addEventListener('blur', stop);
     window.addEventListener('focus', resume);
+    window.addEventListener('keydown', handleGlobalKeydown);
     window.addEventListener('languagechange', syncSystemLocale);
     document.addEventListener('visibilitychange', hidden);
     colorScheme.addEventListener?.('change', syncSystemTheme);
@@ -121,6 +138,7 @@
       if (timer) clearInterval(timer);
       window.removeEventListener('blur', stop);
       window.removeEventListener('focus', resume);
+      window.removeEventListener('keydown', handleGlobalKeydown);
       window.removeEventListener('languagechange', syncSystemLocale);
       document.removeEventListener('visibilitychange', hidden);
       colorScheme.removeEventListener?.('change', syncSystemTheme);
@@ -187,8 +205,21 @@
   }
 
   function handleFocus() {
-    focused = true;
+    if (!practicePaused) focused = true;
     if (!composing) input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  function pausePractice() {
+    practicePaused = true;
+    focused = false;
+  }
+
+  function resumePracticeFromKey(event: KeyboardEvent) {
+    if (!practicePaused || event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
+    practicePaused = false;
+    focused = true;
+    focusInput();
   }
 
   async function updateCaret(..._changes: unknown[]) {
@@ -265,6 +296,7 @@
   function restart(next = false, language = textLanguage) {
     const previousLanguage = textLanguage;
     requestId += 1;
+    practicePaused = false;
     clock = { total: 0, since: null };
     composing = false;
     compositionText = '';
@@ -309,6 +341,10 @@
     await tick();
     focusInput();
   }
+
+  async function navigateBack() {
+    if (view === 'settings') await closeSettings();
+  }
 </script>
 
 <svelte:head>
@@ -319,7 +355,7 @@
   <header class="global-nav" role="presentation" onmousedown={dragWindow}>
     <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
     <div class="window-actions">
-      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? closeSettings() : openSettings()}>
+      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? navigateBack() : openSettings()}>
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 3 .5-1h3l.5 1 .5 1 1 .5 1-.5 2 2-.5 1 .5 1 1 .5 1 .5v3l-1 .5-1 .5-.5 1 .5 1-2 2-1-.5-1 .5-.5 1-.5 1h-3l-.5-1-.5-1-1-.5-1 .5-2-2 .5-1-.5-1-1-.5-1-.5v-3l1-.5 1-.5.5-1-.5-1 2-2 1 .5 1-.5.5-1Z" /><circle cx="10" cy="10" r="2.5" /></svg>
       </button>
       {#if isTauri}
@@ -335,7 +371,7 @@
   {#if view === 'settings'}
     <main class="settings-page">
       <div class="settings-heading">
-        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={closeSettings}>←</button>
+        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
         <h1>{t.settingsTitle}</h1>
       </div>
 
