@@ -21,6 +21,7 @@
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
+  import { ScrollMemory } from './scroll-memory';
   import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
 
   type Locale = 'zh' | 'en';
@@ -57,11 +58,14 @@
   let focused = $state(false);
   let elapsed = $state(0);
   let pinned = $state(false);
+  let pinGeneration = 0;
   let composing = $state(false);
   let surfacePressed = $state(false);
   let input = $state<HTMLTextAreaElement | undefined>();
   let backButton = $state<HTMLButtonElement | undefined>();
   let settingsPage = $state<HTMLElement | undefined>();
+  const settingsScroll = new ScrollMemory();
+
   let textDisplay = $state<HTMLDivElement | undefined>();
   let captureX = $state(0);
   let captureY = $state(0);
@@ -242,7 +246,10 @@
     void loadPractice().then(() => tick()).then(() => focusInput());
 
     if (appWindow) {
-      void appWindow.isAlwaysOnTop().then(value => { pinned = value; });
+      const pinRead = pinGeneration;
+      void appWindow.isAlwaysOnTop().then(value => {
+        if (pinRead === pinGeneration) pinned = value;
+      });
       void appWindow.onFocusChanged(({ payload: active }) => {
         if (!active) pausePractice();
       }).then(unlisten => { unlistenFocus = unlisten; });
@@ -437,15 +444,31 @@
     }
   }
 
+
+  function currentSettingsPage() {
+    if (selectedAgent) return 'agent:' + selectedAgent;
+    if (libraryOpen) return 'library';
+    return 'settings';
+  }
+
+  function rememberSettingsScroll() {
+    settingsScroll.save(currentSettingsPage(), settingsPage);
+  }
+
+  async function restoreSettingsScroll(id = currentSettingsPage()) {
+    await tick();
+    settingsScroll.apply(id, settingsPage);
+  }
+
   async function openAgentDetail(agent: AgentSummary) {
+    rememberSettingsScroll();
     selectedAgent = agent.id;
     agentDetail = null;
     agentDetailDraft = '';
     agentDetailLoading = true;
     agentError = '';
-    await tick();
-    settingsPage?.scrollTo(0, 0);
-    backButton?.focus();
+    await restoreSettingsScroll('agent:' + agent.id);
+    backButton?.focus({ preventScroll: true });
     try {
       if (isTauri) {
         agentDetail = await invoke<AgentDetail>('get_agent_detail', { agent: agent.id });
@@ -461,11 +484,12 @@
   }
 
   function closeAgentDetail() {
+    rememberSettingsScroll();
     selectedAgent = null;
     agentDetail = null;
     agentDetailDraft = '';
     agentError = '';
-    void tick().then(() => settingsPage?.querySelector('.agent-settings')?.scrollIntoView({ block: 'nearest' }));
+    void restoreSettingsScroll('settings');
   }
 
   async function saveAgentDetail() {
@@ -992,23 +1016,20 @@
 
   async function openLibrary() {
     importError = '';
+    rememberSettingsScroll();
     libraryOpen = true;
-    await tick();
-    settingsPage?.scrollTo(0, 0);
+    await restoreSettingsScroll('library');
   }
 
   function closeLibrary() {
+    rememberSettingsScroll();
     libraryOpen = false;
-    void tick().then(() => settingsPage?.scrollTo(0, 0));
+    void restoreSettingsScroll('settings');
   }
 
   async function selectLibrary(id: string) {
     if (id !== snapshot.collectionId) await changeCollection(id);
-    if (!importError) {
-      libraryOpen = false;
-      await tick();
-      settingsPage?.scrollTo(0, 0);
-    }
+    if (!importError) closeLibrary();
   }
 
   async function removeLibrary(id: string) {
@@ -1131,11 +1152,18 @@
 
   async function togglePinned() {
     if (!appWindow) return;
+    const next = !pinned;
+    pinGeneration += 1;
+    pinned = next;
     try {
-      pinned = !pinned;
-      await appWindow.setAlwaysOnTop(pinned);
+      await appWindow.setAlwaysOnTop(next);
+      if (next) {
+        await appWindow.unminimize().catch(() => {});
+        await appWindow.setFocus().catch(() => {});
+      }
     } catch {
-      pinned = !pinned;
+      pinGeneration += 1;
+      pinned = !next;
     }
   }
 
@@ -1155,9 +1183,11 @@
     if (!fontsLoaded) void loadFonts();
     if (!agentsLoaded) void loadAgents();
     await tick();
-    backButton?.focus();
+    settingsScroll.apply('settings', settingsPage);
+    backButton?.focus({ preventScroll: true });
   }
   async function closeSettings() {
+    rememberSettingsScroll();
     view = 'practice';
     libraryOpen = false;
     selectedAgent = null;

@@ -313,7 +313,32 @@ fn remove_word_book(state: State<'_, AppState>, id: String) -> Result<CatalogUpd
     remove_collection(&state, false, &id)
 }
 
+fn use_x11_when_gnome_ignores_pin() {
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("GDK_BACKEND").is_some() {
+            return;
+        }
+        // GNOME Wayland drops gtk_window_set_keep_above, so the pin button
+        // lights up while other windows still cover Typelet. Mutter does honor
+        // _NET_WM_STATE_ABOVE for XWayland clients.
+        let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let xwayland_available = std::env::var_os("DISPLAY").is_some();
+        if !on_wayland || !xwayland_available {
+            return;
+        }
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        let gnome = desktop
+            .split([':', ';'])
+            .any(|part| part.eq_ignore_ascii_case("GNOME"));
+        if gnome {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+    }
+}
+
 fn main() {
+    use_x11_when_gnome_ignores_pin();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
