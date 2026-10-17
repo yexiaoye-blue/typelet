@@ -155,8 +155,8 @@
   let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
   let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
   let itemReachedEnd = $derived(snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length);
-  let canGoPreviousItem = $derived(snapshot.itemIndex > 1);
-  let canGoNextItem = $derived(snapshot.itemIndex < snapshot.itemCount && (stats.done || itemReachedEnd || allowIncompleteNext));
+  let canGoPreviousItem = $derived(!chapterPaused && snapshot.chapterItemIndex > 1);
+  let canGoNextItem = $derived(!chapterPaused && snapshot.chapterItemIndex < snapshot.chapterItemCount && (stats.done || itemReachedEnd || allowIncompleteNext));
   let canGoPreviousChapter = $derived(snapshot.chapterIndex > 1);
   let canGoNextChapter = $derived(snapshot.chapterIndex < snapshot.chapterCount);
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
@@ -1521,7 +1521,7 @@
             <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
             </button>
-            <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={chapterPaused || !canGoNextItem} onclick={() => void navigateItem(1)}>
+            <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={!canGoNextItem} onclick={() => void navigateItem(1)}>
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5 6 7-6 7" /></svg>
             </button>
             {#if snapshot.chapterCount > 1}
