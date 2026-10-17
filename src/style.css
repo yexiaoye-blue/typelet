@@ -97,8 +97,8 @@ progress::-moz-progress-bar { background: var(--action); }
 .navigation-button:hover:not(:disabled) { color: var(--action); background: color-mix(in srgb, var(--action) 14%, transparent); }
 .navigation-button:disabled { cursor: default; opacity: .32; }
 .navigation-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.chapter-select { max-width: 92px; padding: 4px 8px; color: var(--muted); border: 1px solid var(--field-border); border-radius: 999px; background: var(--tile); font-size: 11px; cursor: pointer; }
-.chapter-select.named { max-width: 148px; }
+.chapter-select { width: 112px; max-width: 112px; padding: 4px 8px; color: var(--muted); border: 1px solid var(--field-border); border-radius: 999px; background: var(--tile); font-size: 11px; cursor: pointer; }
+.chapter-select.named { width: 112px; max-width: 112px; }
 .chapter-position { flex: none; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .typing-surface.word-mode { display: flex; align-items: center; justify-content: center; }
 .practice-body { height: 100%; }
