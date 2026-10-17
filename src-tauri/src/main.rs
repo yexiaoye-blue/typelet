@@ -125,6 +125,28 @@ fn advance_practice(state: State<'_, AppState>) -> Result<PracticeSnapshot, Stri
 }
 
 #[tauri::command]
+fn select_practice_item(
+    state: State<'_, AppState>,
+    item_index: usize,
+) -> Result<PracticeSnapshot, String> {
+    let catalog = state
+        .content
+        .lock()
+        .map_err(|_| "内容状态锁定失败".to_owned())?;
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "练习状态锁定失败".to_owned())?;
+    let current = session
+        .select_item(&catalog, item_index)
+        .map_err(command_error)?;
+    drop(session);
+    drop(catalog);
+    save_content(&state)?;
+    Ok(current)
+}
+
+#[tauri::command]
 fn select_word_chapter(
     state: State<'_, AppState>,
     chapter: usize,
@@ -365,8 +387,9 @@ fn main() {
             let sentence_index = stored.sentence_index;
             let word_index = stored.word_index;
             let content = ContentCatalog::from_stored(stored).map_err(command_error)?;
-            let session = PracticeSession::with_stored_progress(&content, sentence_index, word_index)
-                .map_err(command_error)?;
+            let session =
+                PracticeSession::with_stored_progress(&content, sentence_index, word_index)
+                    .map_err(command_error)?;
             app.manage(AppState {
                 content: Mutex::new(content),
                 session: Mutex::new(session),
@@ -383,6 +406,7 @@ fn main() {
             typing_snapshot,
             reset_practice,
             advance_practice,
+            select_practice_item,
             select_word_chapter,
             get_content_catalog,
             select_practice_mode,

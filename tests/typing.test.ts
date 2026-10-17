@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { freshPractice, previewAdvance, previewSelectChapter, previewSnapshot, previewUpdate, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
+import { freshPractice, previewAdvance, previewSelectChapter, previewSelectItem, previewSnapshot, previewUpdate, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
 test('backspace correction retains earlier mistakes in accuracy', () => {
  let practice = updatePractice(freshPractice(), 'ax', 'abc');
  assert.equal(statistics(practice, 'abc', 1000).accuracy, 50);
@@ -38,6 +38,12 @@ test('a wrong attempt can advance once it reaches the end of the text', () => {
   assert.equal(wrong.stats.done, false);
   assert.equal(previewAdvance(wrong).itemIndex, 2);
   assert.throws(() => previewAdvance(previewUpdate(initial, wrongText.slice(0, -1), 1000)));
+});
+test('web preview can select adjacent items and keeps item boundaries', () => {
+  const first = previewSnapshot('word', 'preview:cet4', 0);
+  assert.equal(previewSelectItem(first, 1).itemIndex, 2);
+  assert.equal(previewSelectItem(first, -1), first);
+  assert.equal(previewSelectItem(first, first.itemCount), first);
 });
 test('sentence preset groups movie lines into chapters', () => {
   const first = previewSnapshot();

@@ -11,6 +11,7 @@
     previewReset,
     previewSelectCollection,
     previewSelectChapter,
+    previewSelectItem,
     previewSnapshot,
     previewUpdate,
     summarizeChapter,
@@ -100,6 +101,7 @@
   let chapterWords = $state<Record<number, ChapterWordResult>>({});
   let chapterPaused = $state(false);
   let practicePhase = $state<'idle' | 'running' | 'paused'>('idle');
+  let allowIncompleteNext = $state(false);
   let chapterContinuation = false;
   let activeAudio: HTMLAudioElement | undefined;
   let pronunciationGeneration = 0;
@@ -152,6 +154,11 @@
   });
   let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
   let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
+  let itemReachedEnd = $derived(snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length);
+  let canGoPreviousItem = $derived(snapshot.itemIndex > 1);
+  let canGoNextItem = $derived(snapshot.itemIndex < snapshot.itemCount && (stats.done || itemReachedEnd || allowIncompleteNext));
+  let canGoPreviousChapter = $derived(snapshot.chapterIndex > 1);
+  let canGoNextChapter = $derived(snapshot.chapterIndex < snapshot.chapterCount);
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
 
@@ -181,6 +188,18 @@
     void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
     void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
   });
+
+  function handlePracticeNavigationKey(event: KeyboardEvent) {
+    if (event.defaultPrevented || view !== 'practice' || event.repeat || event.isComposing || event.altKey || event.metaKey) return false;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('select, input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return false;
+    event.preventDefault();
+    const direction = event.key === 'ArrowLeft' ? -1 : 1;
+    if (event.ctrlKey) void navigateChapter(direction);
+    else void navigateItem(direction);
+    return true;
+  }
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -235,6 +254,7 @@
       beginPractice();
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (handlePracticeNavigationKey(event)) return;
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
         event.preventDefault();
@@ -934,6 +954,7 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.repeat) return;
+    if (handlePracticeNavigationKey(event)) return;
     if (event.key === 'Escape') return;
     if (event.key === 'Enter' && chapterPaused) {
       event.preventDefault();
@@ -968,6 +989,7 @@
     const keepChapterClock = !(next && snapshot.isChapterLastItem);
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     if (keepChapterClock) itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
     else resetPracticeClock();
     composing = false;
@@ -986,10 +1008,45 @@
     focusInput();
   }
 
+  async function navigateItem(direction: -1 | 1) {
+    if (direction < 0 && !canGoPreviousItem) return;
+    if (direction > 0 && (chapterPaused || !canGoNextItem)) return;
+    await selectPracticeItem(snapshot.itemIndex - 1 + direction, direction < 0);
+  }
+
+  async function selectPracticeItem(itemIndex: number, allowNextAfterLeft: boolean) {
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    composing = false;
+    compositionText = '';
+    draft = '';
+    committedDraft = '';
+    chapterPaused = false;
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_practice_item', { itemIndex })
+        : previewSelectItem(snapshot, itemIndex);
+      applySnapshot(nextSnapshot, true);
+      allowIncompleteNext = allowNextAfterLeft;
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function navigateChapter(direction: -1 | 1) {
+    if (direction < 0 && !canGoPreviousChapter) return;
+    if (direction > 0 && !canGoNextChapter) return;
+    await selectChapter(snapshot.chapterIndex - 1 + direction);
+  }
+
   async function changeMode(mode: PracticeMode) {
     if (snapshot.mode === mode) return;
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     try {
       const nextSnapshot = isTauri
@@ -1007,6 +1064,7 @@
   async function changeCollection(id: string) {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     importError = '';
     try {
@@ -1060,9 +1118,13 @@
   }
 
   async function changeChapter(event: Event) {
-    const chapter = Number((event.currentTarget as HTMLSelectElement).value);
+    await selectChapter(Number((event.currentTarget as HTMLSelectElement).value));
+  }
+
+  async function selectChapter(chapter: number) {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     draft = '';
     committedDraft = '';
@@ -1081,6 +1143,7 @@
   async function retryChapter() {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     composing = false;
     compositionText = '';
@@ -1454,19 +1517,32 @@
               </button>
             </div>
           {/if}
-          {#if snapshot.mode === 'word' || snapshot.chapterCount > 1}
-            <div class="word-navigation">
+          <div class="word-navigation">
+            <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
+            </button>
+            <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={chapterPaused || !canGoNextItem} onclick={() => void navigateItem(1)}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5 6 7-6 7" /></svg>
+            </button>
+            {#if snapshot.chapterCount > 1}
+              <span class="navigation-divider" aria-hidden="true"></span>
+              <button type="button" class="navigation-button chapter-navigation-button" aria-label={t.previousChapter} title={t.previousChapter} disabled={!canGoPreviousChapter} onclick={() => void navigateChapter(-1)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 5-6 7 6 7M20 5l-6 7 6 7" /></svg>
+              </button>
               <span class="practice-label">{snapshot.collectionTitle}</span>
               <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
                 {#each Array.from({ length: snapshot.chapterCount }) as _, index}
                   <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
                 {/each}
               </select>
+              <button type="button" class="navigation-button chapter-navigation-button" aria-label={t.nextChapter} title={t.nextChapter} disabled={!canGoNextChapter} onclick={() => void navigateChapter(1)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 5 6 7-6 7M11 5l6 7-6 7" /></svg>
+              </button>
               <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
-            </div>
-          {:else}
-            <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
-          {/if}
+            {:else}
+              <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
+            {/if}
+          </div>
         </div>
 
 
