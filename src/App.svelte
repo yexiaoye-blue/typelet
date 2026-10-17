@@ -1518,26 +1518,22 @@
             </div>
           {/if}
           <div class="word-navigation">
-            <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
-            </button>
-            <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={!canGoNextItem} onclick={() => void navigateItem(1)}>
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5 6 7-6 7" /></svg>
-            </button>
+            <div class="item-navigation">
+              <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
+              </button>
+              <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={!canGoNextItem} onclick={() => void navigateItem(1)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5 6 7-6 7" /></svg>
+              </button>
+            </div>
             {#if snapshot.chapterCount > 1}
               <span class="navigation-divider" aria-hidden="true"></span>
-              <button type="button" class="navigation-button chapter-navigation-button" aria-label={t.previousChapter} title={t.previousChapter} disabled={!canGoPreviousChapter} onclick={() => void navigateChapter(-1)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 5-6 7 6 7M20 5l-6 7 6 7" /></svg>
-              </button>
               <span class="practice-label">{snapshot.collectionTitle}</span>
               <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
                 {#each Array.from({ length: snapshot.chapterCount }) as _, index}
                   <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
                 {/each}
               </select>
-              <button type="button" class="navigation-button chapter-navigation-button" aria-label={t.nextChapter} title={t.nextChapter} disabled={!canGoNextChapter} onclick={() => void navigateChapter(1)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 5 6 7-6 7M11 5l6 7-6 7" /></svg>
-              </button>
               <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
             {:else}
               <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
