@@ -11,6 +11,7 @@
     previewReset,
     previewSelectCollection,
     previewSelectChapter,
+    previewSelectItem,
     previewSnapshot,
     previewUpdate,
     summarizeChapter,
@@ -23,6 +24,7 @@
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
   import { ScrollMemory } from './scroll-memory';
   import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
+  import SettingsSelect, { type SettingsSelectOption } from './components/SettingsSelect.svelte';
 
   type Locale = 'zh' | 'en';
   type LocalePreference = 'system' | Locale;
@@ -99,6 +101,7 @@
   let chapterWords = $state<Record<number, ChapterWordResult>>({});
   let chapterPaused = $state(false);
   let practicePhase = $state<'idle' | 'running' | 'paused'>('idle');
+  let allowIncompleteNext = $state(false);
   let chapterContinuation = false;
   let activeAudio: HTMLAudioElement | undefined;
   let pronunciationGeneration = 0;
@@ -137,8 +140,25 @@
   let chapterResultUnit = $derived(snapshot.mode === 'sentence' ? t.chapterSentences : t.chapterWords);
   let typed = $derived(characters(committedDraft));
   let filteredFonts = $derived(systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase())));
+  const keySoundOptions: SettingsSelectOption[] = keySoundPacks.map(pack => ({ value: pack.id, label: pack.id }));
+  let fontOptions = $derived.by((): SettingsSelectOption[] => {
+    const options: SettingsSelectOption[] = [
+      { value: bundledFont, label: 'Noto Sans Mono · ' + t.builtIn },
+      { value: 'system', label: t.systemFont },
+    ];
+    if (fontPreference.startsWith('font:') && !filteredFonts.includes(fontPreference.slice(5))) {
+      options.push({ value: fontPreference, label: fontPreference.slice(5) });
+    }
+    options.push(...filteredFonts.map(family => ({ value: 'font:' + family, label: family, group: t.systemFonts })));
+    return options;
+  });
   let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
   let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
+  let itemReachedEnd = $derived(snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length);
+  let canGoPreviousItem = $derived(!chapterPaused && snapshot.chapterItemIndex > 1);
+  let canGoNextItem = $derived(!chapterPaused && snapshot.chapterItemIndex < snapshot.chapterItemCount && (stats.done || itemReachedEnd || allowIncompleteNext));
+  let canGoPreviousChapter = $derived(snapshot.chapterIndex > 1);
+  let canGoNextChapter = $derived(snapshot.chapterIndex < snapshot.chapterCount);
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
 
@@ -168,6 +188,18 @@
     void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
     void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
   });
+
+  function handlePracticeNavigationKey(event: KeyboardEvent) {
+    if (event.defaultPrevented || view !== 'practice' || event.repeat || event.isComposing || event.altKey || event.metaKey) return false;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('select, input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return false;
+    event.preventDefault();
+    const direction = event.key === 'ArrowLeft' ? -1 : 1;
+    if (event.ctrlKey) void navigateChapter(direction);
+    else void navigateItem(direction);
+    return true;
+  }
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -222,6 +254,7 @@
       beginPractice();
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (handlePracticeNavigationKey(event)) return;
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
         event.preventDefault();
@@ -383,8 +416,7 @@
     previewKeySound();
   }
 
-  function setKeyPack(event: Event) {
-    const pack = (event.currentTarget as HTMLSelectElement).value;
+  function setKeyPack(pack: string) {
     if (!keySoundPacks.some(item => item.id === pack)) return;
     rememberSound({ ...sound, pack });
     previewKeySound(true);
@@ -922,6 +954,7 @@
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.repeat) return;
+    if (handlePracticeNavigationKey(event)) return;
     if (event.key === 'Escape') return;
     if (event.key === 'Enter' && chapterPaused) {
       event.preventDefault();
@@ -956,6 +989,7 @@
     const keepChapterClock = !(next && snapshot.isChapterLastItem);
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     if (keepChapterClock) itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
     else resetPracticeClock();
     composing = false;
@@ -974,10 +1008,45 @@
     focusInput();
   }
 
+  async function navigateItem(direction: -1 | 1) {
+    if (direction < 0 && !canGoPreviousItem) return;
+    if (direction > 0 && (chapterPaused || !canGoNextItem)) return;
+    await selectPracticeItem(snapshot.itemIndex - 1 + direction, direction < 0);
+  }
+
+  async function selectPracticeItem(itemIndex: number, allowNextAfterLeft: boolean) {
+    invalidateCompletion();
+    requestId += 1;
+    resetPracticeClock();
+    composing = false;
+    compositionText = '';
+    draft = '';
+    committedDraft = '';
+    chapterPaused = false;
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_practice_item', { itemIndex })
+        : previewSelectItem(snapshot, itemIndex);
+      applySnapshot(nextSnapshot, true);
+      allowIncompleteNext = allowNextAfterLeft;
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function navigateChapter(direction: -1 | 1) {
+    if (direction < 0 && !canGoPreviousChapter) return;
+    if (direction > 0 && !canGoNextChapter) return;
+    await selectChapter(snapshot.chapterIndex - 1 + direction);
+  }
+
   async function changeMode(mode: PracticeMode) {
     if (snapshot.mode === mode) return;
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     try {
       const nextSnapshot = isTauri
@@ -995,6 +1064,7 @@
   async function changeCollection(id: string) {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     importError = '';
     try {
@@ -1048,9 +1118,13 @@
   }
 
   async function changeChapter(event: Event) {
-    const chapter = Number((event.currentTarget as HTMLSelectElement).value);
+    await selectChapter(Number((event.currentTarget as HTMLSelectElement).value));
+  }
+
+  async function selectChapter(chapter: number) {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     draft = '';
     committedDraft = '';
@@ -1069,6 +1143,7 @@
   async function retryChapter() {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     composing = false;
     compositionText = '';
@@ -1217,7 +1292,7 @@
 
 <section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
   <header class="global-nav" role="presentation" onmousedown={dragWindow}>
-    <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
+    <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span>{#if snapshot.collectionTitle}<span class="brand-context" title={snapshot.collectionTitle}>{snapshot.collectionTitle}</span>{/if}</span>
     <div class="window-actions">
       <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? navigateBack() : openSettings()}>
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 3 .5-1h3l.5 1 .5 1 1 .5 1-.5 2 2-.5 1 .5 1 1 .5 1 .5v3l-1 .5-1 .5-.5 1 .5 1-2 2-1-.5-1 .5-.5 1-.5 1h-3l-.5-1-.5-1-1-.5-1 .5-2-2 .5-1-.5-1-1-.5-1-.5v-3l1-.5 1-.5.5-1-.5-1 2-2 1 .5 1-.5.5-1Z" /><circle cx="10" cy="10" r="2.5" /></svg>
@@ -1387,14 +1462,15 @@
             <input type="range" min="0" max="100" step="1" value={sound.keyVolume} disabled={!sound.keyEnabled} oninput={setKeyVolume} />
             <span class="volume-value">{sound.keyVolume}%</span>
           </label>
-          <label class="pack-control">
+          <div class="pack-control">
             <span>{t.keySoundPack}</span>
-            <select class="font-select" aria-label={t.keySoundPack} disabled={!sound.keyEnabled} value={sound.pack} onchange={setKeyPack}>
-              {#each keySoundPacks as pack}
-                <option value={pack.id}>{pack.id}</option>
-              {/each}
-            </select>
-          </label>
+            <div class="sound-picker-row">
+              <SettingsSelect value={sound.pack} options={keySoundOptions} ariaLabel={t.keySoundPack} disabled={!sound.keyEnabled} onSelect={setKeyPack} />
+              <button type="button" class="speaker sound-preview-button" aria-label={t.previewKeySound} title={t.previewKeySound} disabled={!sound.keyEnabled || sound.keyVolume <= 0} onclick={() => previewKeySound(true)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
+              </button>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -1414,18 +1490,7 @@
       <section class="settings-group font-settings" aria-label={t.font}>
         <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
         <input class="font-search" type="search" aria-label={t.fontSearch} placeholder={t.fontSearch} bind:value={fontSearch} />
-        <select class="font-select" aria-label={t.font} value={fontPreference} onchange={(event) => selectFont((event.currentTarget as HTMLSelectElement).value)}>
-          <option value={bundledFont}>Noto Sans Mono · {t.builtIn}</option>
-          <option value="system">{t.systemFont}</option>
-          {#if fontPreference.startsWith('font:') && !filteredFonts.includes(fontPreference.slice(5))}
-            <option value={fontPreference}>{fontPreference.slice(5)}</option>
-          {/if}
-          <optgroup label={t.systemFonts}>
-            {#each filteredFonts as family}
-              <option value={`font:${family}`}>{family}</option>
-            {/each}
-          </optgroup>
-        </select>
+        <SettingsSelect value={fontPreference} options={fontOptions} ariaLabel={t.font} onSelect={selectFont} />
         <div class="font-sample" aria-label={t.fontSample}>Aa Bb 123 · 中文</div>
         <div class="font-list-status">
           <span role="status">{fontsLoading ? t.fontLoading : fontsFailed ? t.fontError : `${t.fontCount}: ${systemFonts.length}`}</span>
@@ -1440,6 +1505,9 @@
         <div class="passage-heading">
           {#if !chapterPaused}
             <div class="practice-controls">
+              <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
+              </button>
               <button type="button" class="icon-button" aria-label={t.restart} title={t.restart} onclick={() => void restart()}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(12 12) scale(0.72) translate(-12 -12)"><path class="stroke heavy" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path class="stroke heavy" d="M3 3v5h5" /></g></svg>
               </button>
@@ -1450,21 +1518,27 @@
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9.2 5.6v12.8L18.4 12 9.2 5.6z" /></svg>
                 {/if}
               </button>
+              <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={!canGoNextItem} onclick={() => void navigateItem(1)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5 6 7-6 7" /></svg>
+              </button>
             </div>
           {/if}
-          {#if snapshot.mode === 'word' || snapshot.chapterCount > 1}
-            <div class="word-navigation">
-              <span class="practice-label">{snapshot.collectionTitle}</span>
-              <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
-                {#each Array.from({ length: snapshot.chapterCount }) as _, index}
-                  <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
-                {/each}
-              </select>
-              <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
-            </div>
-          {:else}
-            <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
-          {/if}
+          <div class="word-navigation">
+            {#if snapshot.chapterCount > 1}
+              <div class="practice-context">
+                <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
+                  {#each Array.from({ length: snapshot.chapterCount }) as _, index}
+                    <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
+                  {/each}
+                </select>
+                <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
+              </div>
+            {:else}
+              <div class="practice-context">
+                <span class="chapter-position">{snapshot.itemIndex}/{snapshot.itemCount}</span>
+              </div>
+            {/if}
+          </div>
         </div>
 
 

@@ -191,6 +191,11 @@ export function previewAdvance(snapshot: PracticeSnapshot): PracticeSnapshot {
   return previewSnapshot(snapshot.mode, snapshot.collectionId, snapshot.itemIndex % snapshot.itemCount);
 }
 
+export function previewSelectItem(snapshot: PracticeSnapshot, itemIndex: number): PracticeSnapshot {
+  if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= snapshot.itemCount) return snapshot;
+  return previewSnapshot(snapshot.mode, snapshot.collectionId, itemIndex);
+}
+
 export function previewSelectChapter(snapshot: PracticeSnapshot, chapter: number): PracticeSnapshot {
   if (snapshot.mode === 'sentence') {
     const article = previewArticles.find(item => item.id === snapshot.collectionId) ?? previewArticles[0];

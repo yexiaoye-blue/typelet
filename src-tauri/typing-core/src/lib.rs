@@ -245,6 +245,13 @@ pub enum ContentError {
     UnknownCollection(String),
     /// The current item is not complete yet.
     ItemNotComplete,
+    /// The requested practice item does not exist.
+    InvalidItem {
+        /// Zero-based item index received from the UI.
+        item: usize,
+        /// Number of available items.
+        count: usize,
+    },
     /// The requested word chapter does not exist.
     InvalidChapter {
         /// Zero-based chapter index received from the UI.
@@ -276,6 +283,9 @@ impl Display for ContentError {
             }
             Self::UnknownCollection(id) => write!(formatter, "找不到内容：{id}"),
             Self::ItemNotComplete => formatter.write_str("当前练习项尚未完成"),
+            Self::InvalidItem { item, count } => {
+                write!(formatter, "找不到第 {} 项，共 {count} 项", item + 1)
+            }
             Self::InvalidChapter { chapter, count } => {
                 write!(formatter, "找不到第 {} 章，共 {count} 章", chapter + 1)
             }
@@ -911,6 +921,23 @@ impl PracticeSession {
         self.make_snapshot(catalog, 0)
     }
 
+    /// Select an item in the current collection and reset its practice text.
+    pub fn select_item(
+        &mut self,
+        catalog: &ContentCatalog,
+        item: usize,
+    ) -> Result<PracticeSnapshot, ContentError> {
+        self.sync_selection(catalog)?;
+        let count = catalog.item_count(self.mode, &self.collection_id)?;
+        if item >= count {
+            return Err(ContentError::InvalidItem { item, count });
+        }
+        self.item_index = item;
+        self.practice = Practice::default();
+        self.remember_position();
+        self.make_snapshot(catalog, 0)
+    }
+
     /// Select a word chapter and reset its first word.
     pub fn select_chapter(
         &mut self,
@@ -1351,18 +1378,43 @@ mod tests {
             .snapshot(&catalog, 0)
             .expect("embedded content is valid")
             .target;
-        let short = target.chars().take(target.chars().count().saturating_sub(1)).collect::<String>();
+        let short = target
+            .chars()
+            .take(target.chars().count().saturating_sub(1))
+            .collect::<String>();
         skipped
             .update(&catalog, &short, 1_000)
             .expect("short attempt can be stored");
-        assert_eq!(skipped.advance(&catalog), Err(ContentError::ItemNotComplete));
+        assert_eq!(
+            skipped.advance(&catalog),
+            Err(ContentError::ItemNotComplete)
+        );
         let same_length = "x".repeat(target.chars().count());
         let wrong = skipped
             .update(&catalog, &same_length, 1_000)
             .expect("full-length attempt can be stored");
         assert!(!wrong.stats.done);
-        let moved = skipped.advance(&catalog).expect("reaching the end can advance");
+        let moved = skipped
+            .advance(&catalog)
+            .expect("reaching the end can advance");
         assert_eq!(moved.item_index, 2);
+    }
+
+    #[test]
+    fn session_selects_items_and_rejects_out_of_range_indexes() {
+        let catalog = ContentCatalog::new().expect("embedded content is valid");
+        let mut session = PracticeSession::new(&catalog).expect("embedded content is valid");
+        let selected = session
+            .select_item(&catalog, 1)
+            .expect("second item exists");
+        assert_eq!(selected.item_index, 2);
+        assert_eq!(
+            session.select_item(&catalog, selected.item_count),
+            Err(ContentError::InvalidItem {
+                item: selected.item_count,
+                count: selected.item_count,
+            })
+        );
     }
 
     #[test]
