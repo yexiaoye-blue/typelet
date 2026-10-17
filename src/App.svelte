@@ -1527,16 +1527,19 @@
               </button>
             </div>
             {#if snapshot.chapterCount > 1}
-              <span class="navigation-divider" aria-hidden="true"></span>
-              <span class="practice-label">{snapshot.collectionTitle}</span>
-              <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
-                {#each Array.from({ length: snapshot.chapterCount }) as _, index}
-                  <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
-                {/each}
-              </select>
-              <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
+              <div class="practice-context">
+                <span class="practice-label">{snapshot.collectionTitle}</span>
+                <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
+                  {#each Array.from({ length: snapshot.chapterCount }) as _, index}
+                    <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
+                  {/each}
+                </select>
+                <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
+              </div>
             {:else}
-              <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
+              <div class="practice-context">
+                <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
+              </div>
             {/if}
           </div>
         </div>
