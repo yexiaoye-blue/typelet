@@ -260,6 +260,11 @@
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
       if (handlePracticeNavigationKey(event)) return;
+      if (event.code === 'Comma' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && !event.repeat) {
+        event.preventDefault();
+        if (view !== 'settings') void openSettings();
+        return;
+      }
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
         event.preventDefault();
@@ -1567,7 +1572,6 @@
                 {#each expected as char, index}
                   {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
                 {/each}
-                {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
                   </div>
                 </div>
               </div>
