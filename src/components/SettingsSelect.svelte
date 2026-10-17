@@ -16,10 +16,11 @@
     options: SettingsSelectOption[];
     ariaLabel: string;
     disabled?: boolean;
+    variant?: 'field' | 'pill';
     onSelect: (value: string) => void;
   };
 
-  let { value, options, ariaLabel, disabled = false, onSelect }: Props = $props();
+  let { value, options, ariaLabel, disabled = false, variant = 'field', onSelect }: Props = $props();
   let root = $state<HTMLDivElement>();
   let trigger = $state<HTMLButtonElement>();
   let menu = $state<HTMLDivElement>();
@@ -44,10 +45,12 @@
     const availableAbove = Math.max(0, rect.top - margin);
     const opensAbove = availableBelow < 180 && availableAbove > availableBelow;
     const maxHeight = Math.max(120, Math.min(240, opensAbove ? availableAbove : availableBelow));
+    const menuWidth = variant === 'pill' ? Math.max(rect.width, 220) : rect.width;
+    const preferredLeft = variant === 'pill' ? rect.right - menuWidth : rect.left;
     menuPosition = {
       top: opensAbove ? Math.max(margin, rect.top - maxHeight - gap) : rect.bottom + gap,
-      left: rect.left,
-      width: rect.width,
+      left: Math.max(margin, Math.min(preferredLeft, window.innerWidth - menuWidth - margin)),
+      width: menuWidth,
       maxHeight,
     };
   }
@@ -103,6 +106,7 @@
     if (!open) return;
     if (event.key === 'Escape') {
       event.preventDefault();
+      event.stopPropagation();
       closeMenu();
       return;
     }
@@ -155,7 +159,7 @@
   });
 </script>
 
-<div class="settings-select" bind:this={root}>
+<div class="settings-select" class:pill={variant === 'pill'} bind:this={root}>
   <button
     bind:this={trigger}
     class="settings-select-trigger"
@@ -226,4 +230,12 @@
   .settings-select-option.selected:not(.highlighted) { color: var(--action); background: color-mix(in srgb, var(--action) 12%, var(--field)); font-weight: 600; }
   .settings-select-option span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .settings-select-check { flex: none; width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+  .settings-select.pill { width: 112px; flex: none; }
+  .settings-select.pill .settings-select-trigger { height: 27px; min-height: 27px; gap: 4px; padding: 0 7px 0 9px; color: var(--muted); border-color: var(--field-border); border-radius: 999px; background: var(--tile); box-shadow: none; font-size: 11px; font-weight: 400; line-height: 1; }
+  .settings-select.pill .settings-select-trigger:hover,
+  .settings-select.pill .settings-select-trigger:focus-visible,
+  .settings-select.pill .settings-select-trigger[aria-expanded='true'] { border-color: var(--field-border); background: var(--tile); outline: none; }
+  .settings-select.pill .settings-select-trigger:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+  .settings-select.pill .settings-select-trigger:active { transform: none; }
+  .settings-select.pill .settings-select-chevron { width: 10px; height: 10px; }
 </style>

@@ -89,16 +89,12 @@ progress::-moz-progress-bar { background: var(--action); }
 .icon-button svg path { fill: currentColor; }
 .icon-button svg path.stroke { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .icon-button svg path.stroke.heavy { stroke-width: 2.5; }
-.passage-heading select { max-width: 112px; padding: 4px 9px; color: var(--muted); border: 1px solid var(--field-border); border-radius: 999px; background: var(--tile); font-size: 11px; cursor: pointer; }
-.passage-heading select option { color: var(--ink); background: var(--canvas); }
 .word-navigation { display: flex; flex: 0 1 auto; align-items: center; justify-content: flex-end; gap: 0; width: auto; min-width: 0; max-width: 62%; }
 .practice-context { display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
 .navigation-button { display: grid; place-items: center; flex: none; width: 24px; height: 24px; color: var(--muted); border-radius: 50%; }
 .navigation-button:hover:not(:disabled) { color: var(--action); background: color-mix(in srgb, var(--action) 14%, transparent); }
 .navigation-button:disabled { cursor: default; opacity: .32; }
 .navigation-button svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
-.chapter-select { width: 112px; max-width: 112px; padding: 4px 8px; color: var(--muted); border: 1px solid var(--field-border); border-radius: 999px; background: var(--tile); font-size: 11px; cursor: pointer; }
-.chapter-select.named { width: 112px; max-width: 112px; }
 .chapter-position { flex: none; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .typing-surface.word-mode { display: flex; align-items: center; justify-content: center; }
 .practice-body { height: 100%; }

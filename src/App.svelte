@@ -159,6 +159,10 @@
   let canGoNextItem = $derived(!chapterPaused && snapshot.chapterItemIndex < snapshot.chapterItemCount && (stats.done || itemReachedEnd || allowIncompleteNext));
   let canGoPreviousChapter = $derived(snapshot.chapterIndex > 1);
   let canGoNextChapter = $derived(snapshot.chapterIndex < snapshot.chapterCount);
+  let chapterOptions = $derived(Array.from({ length: snapshot.chapterCount }, (_, index) => ({
+    value: String(index),
+    label: snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : ''),
+  })));
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
 
@@ -192,7 +196,7 @@
   function handlePracticeNavigationKey(event: KeyboardEvent) {
     if (event.defaultPrevented || view !== 'practice' || event.repeat || event.isComposing || event.altKey || event.metaKey) return false;
     const target = event.target as HTMLElement | null;
-    if (target?.closest('select, input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
+    if (target?.closest('select, [role="combobox"], [role="listbox"], input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return false;
     event.preventDefault();
     const direction = event.key === 'ArrowLeft' ? -1 : 1;
@@ -244,6 +248,7 @@
       if (event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
       const target = event.target as HTMLElement | null;
+      if (target?.closest('[role="combobox"], [role="listbox"], .settings-select')) return;
       const practiceButton = target?.closest('.practice-page button');
       if (practiceButton) {
         if (event.key === 'Enter' || event.key === ' ') return;
@@ -568,7 +573,7 @@
 
   function restorePracticeTypingFocus(event: MouseEvent) {
     const control = practiceButton(event);
-    if (!control) return;
+    if (!control || control.closest('.settings-select')) return;
     if (event.type === 'mousedown') {
       event.preventDefault();
       return;
@@ -1117,8 +1122,13 @@
     }
   }
 
-  async function changeChapter(event: Event) {
-    await selectChapter(Number((event.currentTarget as HTMLSelectElement).value));
+  function chooseChapter(value: string) {
+    const chapter = Number(value);
+    if (chapter === snapshot.chapterIndex - 1) {
+      focusInput();
+      return;
+    }
+    void selectChapter(chapter);
   }
 
   async function selectChapter(chapter: number) {
@@ -1526,11 +1536,7 @@
           <div class="word-navigation">
             {#if snapshot.chapterCount > 1}
               <div class="practice-context">
-                <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
-                  {#each Array.from({ length: snapshot.chapterCount }) as _, index}
-                    <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
-                  {/each}
-                </select>
+                <SettingsSelect variant="pill" value={String(snapshot.chapterIndex - 1)} options={chapterOptions} ariaLabel={t.chapter} onSelect={chooseChapter} />
                 <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
               </div>
             {:else}
