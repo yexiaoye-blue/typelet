@@ -1292,7 +1292,7 @@
 
 <section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
   <header class="global-nav" role="presentation" onmousedown={dragWindow}>
-    <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
+    <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span>{#if snapshot.collectionTitle}<span class="brand-context" title={snapshot.collectionTitle}>{snapshot.collectionTitle}</span>{/if}</span>
     <div class="window-actions">
       <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? navigateBack() : openSettings()}>
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 3 .5-1h3l.5 1 .5 1 1 .5 1-.5 2 2-.5 1 .5 1 1 .5 1 .5v3l-1 .5-1 .5-.5 1 .5 1-2 2-1-.5-1 .5-.5 1-.5 1h-3l-.5-1-.5-1-1-.5-1 .5-2-2 .5-1-.5-1-1-.5-1-.5v-3l1-.5 1-.5.5-1-.5-1 2-2 1 .5 1-.5.5-1Z" /><circle cx="10" cy="10" r="2.5" /></svg>
@@ -1526,7 +1526,6 @@
           <div class="word-navigation">
             {#if snapshot.chapterCount > 1}
               <div class="practice-context">
-                <span class="practice-label">{snapshot.collectionTitle}</span>
                 <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
                   {#each Array.from({ length: snapshot.chapterCount }) as _, index}
                     <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
@@ -1536,7 +1535,7 @@
               </div>
             {:else}
               <div class="practice-context">
-                <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
+                <span class="chapter-position">{snapshot.itemIndex}/{snapshot.itemCount}</span>
               </div>
             {/if}
           </div>
