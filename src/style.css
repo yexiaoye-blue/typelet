@@ -80,6 +80,7 @@ progress::-moz-progress-bar { background: var(--action); }
 .practice-tile { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; padding: 16px 24px; color: var(--ink); background: var(--tile); }
 .passage-heading { display: flex; flex: 0 0 auto; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 4px 8px; min-height: 28px; }
 .practice-controls { display: flex; flex: none; align-items: center; gap: 2px; margin-right: auto; }
+.practice-controls .navigation-button { width: 28px; height: 28px; }
 .icon-button { display: grid; place-items: center; width: 28px; height: 28px; color: var(--muted); border-radius: 50%; }
 .icon-button:hover { color: var(--action); background: color-mix(in srgb, var(--action) 14%, transparent); }
 .icon-button svg { width: 16px; height: 16px; }
@@ -90,7 +91,6 @@ progress::-moz-progress-bar { background: var(--action); }
 .passage-heading select option { color: var(--ink); background: var(--canvas); }
 .practice-label { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .word-navigation { display: flex; flex: 1 1 100%; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; max-width: 100%; }
-.item-navigation { display: flex; flex: none; align-items: center; gap: 1px; padding: 2px; border: 1px solid var(--field-border); border-radius: 999px; background: var(--tile); }
 .practice-context { display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
 .practice-context .practice-label { min-width: 0; max-width: 116px; }
 .navigation-button { display: grid; place-items: center; flex: none; width: 24px; height: 24px; color: var(--muted); border-radius: 50%; }

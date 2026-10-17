@@ -1505,6 +1505,9 @@
         <div class="passage-heading">
           {#if !chapterPaused}
             <div class="practice-controls">
+              <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
+              </button>
               <button type="button" class="icon-button" aria-label={t.restart} title={t.restart} onclick={() => void restart()}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(12 12) scale(0.72) translate(-12 -12)"><path class="stroke heavy" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path class="stroke heavy" d="M3 3v5h5" /></g></svg>
               </button>
@@ -1515,17 +1518,12 @@
                   <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9.2 5.6v12.8L18.4 12 9.2 5.6z" /></svg>
                 {/if}
               </button>
-            </div>
-          {/if}
-          <div class="word-navigation">
-            <div class="item-navigation">
-              <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
-              </button>
               <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={!canGoNextItem} onclick={() => void navigateItem(1)}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5 6 7-6 7" /></svg>
               </button>
             </div>
+          {/if}
+          <div class="word-navigation">
             {#if snapshot.chapterCount > 1}
               <div class="practice-context">
                 <span class="practice-label">{snapshot.collectionTitle}</span>
