@@ -33,6 +33,7 @@ export type ChapterSummary = { words: number; accuracy: number; cpm: number; mil
 
 export const freshPractice = (): Practice => ({ text: '', attempts: 0, correctAttempts: 0 });
 export const characters = (text: string) => Array.from(text.normalize('NFC'));
+export const limitPracticeInput = (value: string, target: string) => characters(value).slice(0, characters(target).length).join('');
 
 export function updatePractice(previous: Practice, value: string, target: string): Practice {
   const before = characters(previous.text), after = characters(value), expected = characters(target);

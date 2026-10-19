@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { freshPractice, previewAdvance, previewSelectChapter, previewSelectItem, previewSnapshot, previewUpdate, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
+import { freshPractice, limitPracticeInput, previewAdvance, previewSelectChapter, previewSelectItem, previewSnapshot, previewUpdate, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
+test('typing input drops hidden overflow so backspace reaches the visible typo', () => {
+ assert.equal(limitPracticeInput('abxc', 'abc'), 'abx');
+ assert.equal(limitPracticeInput('中文𠮷后', '中文𠮷'), '中文𠮷');
+});
 test('backspace correction retains earlier mistakes in accuracy', () => {
  let practice = updatePractice(freshPractice(), 'ax', 'abc');
  assert.equal(statistics(practice, 'abc', 1000).accuracy, 50);
