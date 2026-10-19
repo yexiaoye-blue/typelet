@@ -59,7 +59,7 @@ export function persistSoundPreference(value: SoundPreference) {
 }
 
 const packFiles = new Map(keySoundPacks.map(pack => [pack.id, pack.file]));
-const keySoundGain = 1.6;
+const keySoundGain = 1.8;
 
 function soundUrl(file: string) {
   return new URL('sounds/key-sound/' + encodeURIComponent(file), document.baseURI).href;
