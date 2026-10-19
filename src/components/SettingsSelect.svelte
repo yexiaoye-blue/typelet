@@ -18,9 +18,10 @@
     disabled?: boolean;
     variant?: 'field' | 'pill';
     onSelect: (value: string) => void;
+    onClose?: () => void;
   };
 
-  let { value, options, ariaLabel, disabled = false, variant = 'field', onSelect }: Props = $props();
+  let { value, options, ariaLabel, disabled = false, variant = 'field', onSelect, onClose }: Props = $props();
   let root = $state<HTMLDivElement>();
   let trigger = $state<HTMLButtonElement>();
   let menu = $state<HTMLDivElement>();
@@ -71,8 +72,10 @@
   }
 
   function closeMenu() {
+    const wasOpen = open;
     open = false;
     highlighted = -1;
+    if (wasOpen) onClose?.();
   }
 
   function toggleMenu() {
@@ -83,7 +86,7 @@
   function choose(option: SettingsSelectOption) {
     onSelect(option.value);
     closeMenu();
-    void tick().then(() => trigger?.focus({ preventScroll: true }));
+    if (!onClose) void tick().then(() => trigger?.focus({ preventScroll: true }));
   }
 
   function moveHighlight(offset: number) {
