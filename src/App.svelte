@@ -196,7 +196,8 @@
   function handlePracticeNavigationKey(event: KeyboardEvent) {
     if (event.defaultPrevented || view !== 'practice' || event.repeat || event.isComposing || event.altKey || event.metaKey) return false;
     const target = event.target as HTMLElement | null;
-    if (target?.closest('select, [role="combobox"], [role="listbox"], input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
+    if (target?.closest('[role="combobox"][aria-expanded="true"], [role="listbox"]')) return false;
+    if (target?.closest('select, input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return false;
     event.preventDefault();
     const direction = event.key === 'ArrowLeft' ? -1 : 1;
@@ -567,6 +568,12 @@
 
   function focusInput() {
     input?.focus({ preventScroll: true });
+  }
+
+  function dismissChapterPicker() {
+    window.setTimeout(() => {
+      if (view === 'practice') focusInput();
+    }, 0);
   }
 
   function practiceButton(event: Event) {
@@ -1130,7 +1137,7 @@
   function chooseChapter(value: string) {
     const chapter = Number(value);
     if (chapter === snapshot.chapterIndex - 1) {
-      focusInput();
+      dismissChapterPicker();
       return;
     }
     void selectChapter(chapter);
@@ -1541,7 +1548,7 @@
           <div class="word-navigation">
             {#if snapshot.chapterCount > 1}
               <div class="practice-context">
-                <SettingsSelect variant="pill" value={String(snapshot.chapterIndex - 1)} options={chapterOptions} ariaLabel={t.chapter} onSelect={chooseChapter} />
+                <SettingsSelect variant="pill" value={String(snapshot.chapterIndex - 1)} options={chapterOptions} ariaLabel={t.chapter} onSelect={chooseChapter} onClose={dismissChapterPicker} />
                 <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
               </div>
             {:else}
