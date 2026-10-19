@@ -57,6 +57,7 @@ export function persistSoundPreference(value: SoundPreference) {
 }
 
 const packFiles = new Map(keySoundPacks.map(pack => [pack.id, pack.file]));
+const keySoundGain = 1.6;
 
 function soundUrl(file: string) {
   return new URL('sounds/key-sound/' + encodeURIComponent(file), document.baseURI).href;
@@ -64,6 +65,7 @@ function soundUrl(file: string) {
 
 let context: AudioContext | undefined;
 let gain: GainNode | undefined;
+let compressor: DynamicsCompressorNode | undefined;
 let source: AudioBufferSourceNode | undefined;
 let loadedPack = '';
 let buffer: AudioBuffer | undefined;
@@ -79,7 +81,14 @@ function audioContext() {
   if (!context) {
     context = new AudioContext();
     gain = context.createGain();
-    gain.connect(context.destination);
+    compressor = context.createDynamicsCompressor();
+    compressor.threshold.value = -12;
+    compressor.knee.value = 6;
+    compressor.ratio.value = 4;
+    compressor.attack.value = 0.003;
+    compressor.release.value = 0.08;
+    gain.connect(compressor);
+    compressor.connect(context.destination);
     context.onstatechange = flushPending;
   }
   return context;
@@ -94,7 +103,7 @@ function startBuffer(decoded: AudioBuffer, volumePercent: number) {
     try { previous.stop(); } catch { /* The click already finished. */ }
     previous.disconnect();
   }
-  const level = volumePercent * 0.01;
+  const level = volumePercent * 0.01 * keySoundGain;
   if (level !== appliedVolume) {
     appliedVolume = level;
     gain.gain.value = level;
