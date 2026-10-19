@@ -6,6 +6,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
     characters,
+    limitPracticeInput,
     previewAdvance,
     previewCatalog,
     previewReset,
@@ -941,7 +942,10 @@
       if (input && input.value !== draft) input.value = draft;
       return;
     }
-    const value = (event.currentTarget as HTMLTextAreaElement).value;
+    const currentTarget = event.currentTarget as HTMLTextAreaElement;
+    const rawValue = currentTarget.value;
+    const value = composing ? rawValue : limitPracticeInput(rawValue, target);
+    if (value !== rawValue) currentTarget.value = value;
     draft = value;
     if (!composing) {
       const previous = committedDraft;
@@ -961,12 +965,16 @@
     }
     composing = false;
     compositionText = '';
-    const value = (event.currentTarget as HTMLTextAreaElement).value;
+    const currentTarget = event.currentTarget as HTMLTextAreaElement;
+    const rawValue = currentTarget.value;
+    const value = limitPracticeInput(rawValue, target);
+    if (value !== rawValue) currentTarget.value = value;
     draft = value;
     const previous = committedDraft;
     committedDraft = value;
     playPracticeKey(previous, value);
     void refreshCore(value, itemElapsed());
+    input?.setSelectionRange(value.length, value.length);
   }
 
   function handleKeydown(event: KeyboardEvent) {
