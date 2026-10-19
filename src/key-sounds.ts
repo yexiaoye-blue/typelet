@@ -1,23 +1,25 @@
 // Key clicks are the files Qwerty Learner ships in public/sounds/key-sound.
 // Those recordings come from https://github.com/tplai/kbsim.
 
+// Use PCM WAV copies for reliable decoding in the Tauri WebView; the original
+// MP3 files remain in the bundle as the source recordings.
 export type KeySoundPack = { id: string; file: string };
 
 export const keySoundPacks: KeySoundPack[] = [
   { id: 'Default', file: 'Default.wav' },
-  { id: 'Alpacas', file: 'Alpacas.mp3' },
-  { id: 'Buckling Spring', file: 'Buckling Spring.mp3' },
-  { id: 'Cherry MX Blacks', file: 'Cherry MX Blacks.mp3' },
-  { id: 'Cherry MX Blues', file: 'Cherry MX Blues.mp3' },
-  { id: 'Cherry MX Browns', file: 'Cherry MX Browns.mp3' },
-  { id: 'Gateron Black Inks', file: 'Gateron Black Inks.mp3' },
-  { id: 'Gateron Red Inks', file: 'Gateron Red Inks.mp3' },
-  { id: 'Holy Pandas', file: 'Holy Pandas.mp3' },
-  { id: 'Kailh Box Navies', file: 'Kailh Box Navies.mp3' },
-  { id: 'NovelKeys Creams', file: 'NovelKeys Creams.mp3' },
-  { id: 'SKCM Blue Alps', file: 'SKCM Blue Alps.mp3' },
-  { id: 'Topre', file: 'Topre.mp3' },
-  { id: 'Turquoise Tealios', file: 'Turquoise Tealios.mp3' },
+  { id: 'Alpacas', file: 'Alpacas.wav' },
+  { id: 'Buckling Spring', file: 'Buckling Spring.wav' },
+  { id: 'Cherry MX Blacks', file: 'Cherry MX Blacks.wav' },
+  { id: 'Cherry MX Blues', file: 'Cherry MX Blues.wav' },
+  { id: 'Cherry MX Browns', file: 'Cherry MX Browns.wav' },
+  { id: 'Gateron Black Inks', file: 'Gateron Black Inks.wav' },
+  { id: 'Gateron Red Inks', file: 'Gateron Red Inks.wav' },
+  { id: 'Holy Pandas', file: 'Holy Pandas.wav' },
+  { id: 'Kailh Box Navies', file: 'Kailh Box Navies.wav' },
+  { id: 'NovelKeys Creams', file: 'NovelKeys Creams.wav' },
+  { id: 'SKCM Blue Alps', file: 'SKCM Blue Alps.wav' },
+  { id: 'Topre', file: 'Topre.wav' },
+  { id: 'Turquoise Tealios', file: 'Turquoise Tealios.wav' },
 ];
 
 export type SoundPreference = {
