@@ -108,7 +108,7 @@ progress::-moz-progress-bar { background: var(--action); }
 .practice-body.with-gloss .target { height: auto; overflow: visible; }
 .practice-body:not(.word-stage) .target { margin: 0; padding: 1px 0 3px; font-size: 17px; line-height: 22px; }
 .sentence-gloss { display: block; flex: none; margin: 0; color: var(--muted); font-size: 13px; font-weight: 400; line-height: 18px; text-align: start; }
-.word-stage { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
+.word-stage { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
 .word-stage:has(.chapter-actions) { justify-content: center; gap: 0; }
 .word-row { display: flex; flex: none; align-items: center; justify-content: center; gap: 2px; width: 100%; height: 64px; max-width: 100%; }
 .word-slot { display: flex; align-items: center; justify-content: center; width: 100%; min-width: 0; }
@@ -123,7 +123,7 @@ progress::-moz-progress-bar { background: var(--action); }
 .speaker-inline svg { width: 18px; height: 18px; }
 .word-phonetic, .word-translation { max-width: 100%; margin: 0; text-align: center; }
 .word-phonetic { overflow: hidden; color: var(--muted); font-size: 14px; line-height: 28px; white-space: nowrap; text-overflow: ellipsis; }
-.word-translation { display: -webkit-box; width: min(100%, 300px); min-height: 26px; max-height: 52px; overflow: hidden; color: var(--ink); font-size: 16px; font-weight: 400; line-height: 26px; text-align: center; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.word-translation { display: -webkit-box; width: min(100%, 300px); min-height: 26px; max-height: 52px; overflow: hidden; color: var(--ink); font-size: 17px; font-weight: 500; line-height: 26px; text-align: center; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .practice-body { position: relative; }
 .awaiting-start:not(.with-gloss) .word-row,
 .awaiting-start:not(.with-gloss) .phonetic-row,
