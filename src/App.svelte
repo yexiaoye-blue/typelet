@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import confetti from 'canvas-confetti';
   import { invoke } from '@tauri-apps/api/core';
+  import { getVersion } from '@tauri-apps/api/app';
   import { open } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import {
@@ -22,6 +23,7 @@
     type PracticeSnapshot,
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
+  import { version as packagedVersion } from '../package.json';
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
   import { ScrollMemory } from './scroll-memory';
   import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
@@ -50,6 +52,7 @@
   let pronunciationPreference = $state<PronunciationPreference>(loadPronunciationPreference());
   let autoAdvanceWords = $state(loadAutoAdvanceWords());
   let sound = $state<SoundPreference>(loadSoundPreference());
+  let appVersion = $state(packagedVersion);
   let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   let view = $state<'practice' | 'settings'>('practice');
   let snapshot = $state<PracticeSnapshot>(emptySnapshot);
@@ -279,6 +282,9 @@
       }
     };
     preloadKeySound(sound.pack);
+    if (isTauri) {
+      void getVersion().then(version => { appVersion = version; }).catch(() => { /* Keep the packaged version. */ });
+    }
     const primeKeySound = () => unlockKeySound();
     window.addEventListener('pointerdown', primeKeySound, true);
     window.addEventListener('keydown', primeKeySound, true);
@@ -434,10 +440,20 @@
     previewKeySound(true);
   }
 
-  function playPracticeKey(previous: string, next: string) {
+  function playPracticeKey(previous: string, next: string, occurredAt: number) {
     if (!sound.keyEnabled || sound.keyVolume <= 0 || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
     if (next.length <= previous.length || !next.startsWith(previous)) return;
+    if (keyEventLag(occurredAt) > 70) return;
     playKeySound(sound.pack, sound.keyVolume);
+  }
+
+  function keyEventLag(occurredAt: number) {
+    const now = performance.now();
+    if (!Number.isFinite(occurredAt) || occurredAt <= 0) return 0;
+    // Some WebKit builds report event.timeStamp in seconds. Treat a tiny
+    // stamp as seconds so a clock mismatch cannot silence every click.
+    const stamp = occurredAt < now / 20 ? occurredAt * 1000 : occurredAt;
+    return now - stamp;
   }
 
 
@@ -950,7 +966,7 @@
     if (!composing) {
       const previous = committedDraft;
       committedDraft = value;
-      playPracticeKey(previous, value);
+      playPracticeKey(previous, value, event.timeStamp);
       void refreshCore(value, itemElapsed());
       input?.setSelectionRange(value.length, value.length);
     }
@@ -972,7 +988,7 @@
     draft = value;
     const previous = committedDraft;
     committedDraft = value;
-    playPracticeKey(previous, value);
+    playPracticeKey(previous, value, event.timeStamp);
     void refreshCore(value, itemElapsed());
     input?.setSelectionRange(value.length, value.length);
   }
@@ -1525,6 +1541,13 @@
         <div class="font-list-status">
           <span role="status">{fontsLoading ? t.fontLoading : fontsFailed ? t.fontError : `${t.fontCount}: ${systemFonts.length}`}</span>
           <button disabled={fontsLoading} onclick={loadFonts}>{t.refresh}</button>
+        </div>
+      </section>
+
+      <section class="settings-group version-settings" aria-label={t.version}>
+        <div class="version-row">
+          <span>{t.version}</span>
+          <span class="version-value">{appVersion}</span>
         </div>
       </section>
       {/if}

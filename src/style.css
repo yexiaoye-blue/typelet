@@ -177,6 +177,9 @@ progress::-moz-progress-bar { background: var(--action); }
 .back-button { display: grid; place-items: center; width: 30px; height: 30px; color: var(--action); border: 1px solid var(--hairline); border-radius: 50%; background: var(--canvas); font-size: 18px; line-height: 1; }
 .settings-group { padding: 16px; border: 1px solid var(--hairline); border-radius: 14px; background: var(--canvas); }
 .settings-group + .settings-group { margin-top: 16px; }
+.version-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 28px; }
+.version-row span:first-child { color: var(--ink); font-size: 13px; font-weight: 600; }
+.version-value { color: var(--muted); font-size: 13px; font-weight: 400; font-variant-numeric: tabular-nums; user-select: text; }
 .setting-block { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); }
 .setting-block.is-disabled { opacity: .45; }
 .volume-control { display: grid; grid-template-columns: max-content minmax(0, 1fr) 3.2em; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 600; }
