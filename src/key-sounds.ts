@@ -59,71 +59,119 @@ export function persistSoundPreference(value: SoundPreference) {
 }
 
 const packFiles = new Map(keySoundPacks.map(pack => [pack.id, pack.file]));
-const keySoundGain = 1.8;
+// Most packs peak around -21 to -32 dBFS. Default is about -10 dBFS.
+// A fixed 1.8 gain is only +5 dB, and the old compressor pulled Default
+// back to about -10 dBFS, so the boost was not actually heard. Full volume
+// now lands each pack near -3 dBFS. Clicks that arrive late, or while the
+// output is already behind, are dropped instead of playing as a burst.
+const normalClickPeak = 10 ** (-3 / 20);
+const maxMakeup = 32;
+const maxVoices = 4;
+const voiceOverrunMs = 160;
+
+export function keySoundMakeup(peak: number) {
+  if (!Number.isFinite(peak) || peak <= 0.00001) return 1;
+  return Math.min(maxMakeup, normalClickPeak / peak);
+}
 
 function soundUrl(file: string) {
   return new URL('sounds/key-sound/' + encodeURIComponent(file), document.baseURI).href;
 }
 
 let context: AudioContext | undefined;
-let gain: GainNode | undefined;
-let compressor: DynamicsCompressorNode | undefined;
-let source: AudioBufferSourceNode | undefined;
 let loadedPack = '';
 let buffer: AudioBuffer | undefined;
+let packMakeup = 1;
 let loading: Promise<void> | undefined;
 let loadingPack = '';
 let loadGeneration = 0;
-let appliedVolume = -1;
 let queued = false;
 let queuedPack = '';
 let queuedVolume = 0;
 
+type Voice = {
+  node: AudioBufferSourceNode;
+  gain: GainNode;
+  startedAt: number;
+  durationMs: number;
+};
+
+let voices: Voice[] = [];
+
 function audioContext() {
   if (!context) {
-    context = new AudioContext();
-    gain = context.createGain();
-    compressor = context.createDynamicsCompressor();
-    compressor.threshold.value = -12;
-    compressor.knee.value = 6;
-    compressor.ratio.value = 4;
-    compressor.attack.value = 0.003;
-    compressor.release.value = 0.08;
-    gain.connect(compressor);
-    compressor.connect(context.destination);
+    context = new AudioContext({ latencyHint: 'interactive' });
     context.onstatechange = flushPending;
   }
   return context;
 }
 
-function startBuffer(decoded: AudioBuffer, volumePercent: number) {
-  if (!context || !gain || context.state !== 'running') return false;
-  const previous = source;
-  source = undefined;
-  if (previous) {
-    previous.onended = null;
-    try { previous.stop(); } catch { /* The click already finished. */ }
-    previous.disconnect();
+function bufferPeak(decoded: AudioBuffer) {
+  let peak = 0;
+  for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+    const samples = decoded.getChannelData(channel);
+    for (let index = 0; index < samples.length; index += 1) {
+      const value = Math.abs(samples[index]);
+      if (value > peak) peak = value;
+    }
   }
-  const level = volumePercent * 0.01 * keySoundGain;
-  if (level !== appliedVolume) {
-    appliedVolume = level;
-    gain.gain.value = level;
+  return peak;
+}
+
+function detachVoice(voice: Voice) {
+  voice.node.onended = null;
+  try { voice.node.stop(); } catch { /* The click already finished. */ }
+  try { voice.node.disconnect(); } catch { /* The node is already detached. */ }
+  try { voice.gain.disconnect(); } catch { /* The node is already detached. */ }
+}
+
+function outputBackedUp(now: number) {
+  const healthy: Voice[] = [];
+  let backedUp = false;
+  for (const voice of voices) {
+    if (now - voice.startedAt <= voice.durationMs + voiceOverrunMs) {
+      healthy.push(voice);
+      continue;
+    }
+    backedUp = true;
+    detachVoice(voice);
   }
-  const next = context.createBufferSource();
-  next.buffer = decoded;
-  next.connect(gain);
-  next.onended = () => { if (source === next) source = undefined; };
-  try { next.start(); } catch { next.disconnect(); return false; }
-  source = next;
+  voices = healthy;
+  return backedUp || voices.length >= maxVoices;
+}
+
+function startVoice(decoded: AudioBuffer, volumePercent: number) {
+  if (!context || context.state !== 'running' || voices.length >= maxVoices) return false;
+  const voiceGain = context.createGain();
+  voiceGain.gain.value = volumePercent * 0.01 * packMakeup;
+  const node = context.createBufferSource();
+  node.buffer = decoded;
+  node.connect(voiceGain);
+  voiceGain.connect(context.destination);
+  const voice: Voice = { node, gain: voiceGain, startedAt: performance.now(), durationMs: decoded.duration * 1000 };
+  node.onended = () => {
+    const index = voices.findIndex(item => item.node === node);
+    if (index >= 0) voices.splice(index, 1);
+    try { node.disconnect(); } catch { /* The node is already detached. */ }
+    try { voiceGain.disconnect(); } catch { /* The node is already detached. */ }
+  };
+  try { node.start(); } catch {
+    try { node.disconnect(); voiceGain.disconnect(); } catch { /* The node never started. */ }
+    return false;
+  }
+  voices.push(voice);
   return true;
 }
 
 function flushPending() {
   if (!queued || !buffer || loadedPack !== queuedPack || context?.state !== 'running') return;
+  if (outputBackedUp(performance.now())) {
+    queued = false;
+    return;
+  }
   const volume = queuedVolume;
   queued = false;
-  startBuffer(buffer, volume);
+  startVoice(buffer, volume);
 }
 
 function loadPack(pack: string) {
@@ -139,6 +187,7 @@ function loadPack(pack: string) {
     const decoded = await ctx.decodeAudioData((await response.arrayBuffer()).slice(0));
     if (generation !== loadGeneration) return;
     buffer = decoded;
+    packMakeup = keySoundMakeup(bufferPeak(decoded));
     loadedPack = pack;
   })();
   loading = task.finally(() => {
@@ -161,9 +210,14 @@ export function unlockKeySound() {
 export function playKeySound(pack: string, volumePercent: number) {
   if (volumePercent <= 0 || typeof AudioContext === 'undefined') return;
   const ctx = context ?? audioContext();
+  if (outputBackedUp(performance.now())) {
+    queued = false;
+    if (ctx.state === 'suspended') void ctx.resume();
+    return;
+  }
   if (buffer && loadedPack === pack && ctx.state === 'running') {
     queued = false;
-    startBuffer(buffer, volumePercent);
+    startVoice(buffer, volumePercent);
     return;
   }
   queued = true;
