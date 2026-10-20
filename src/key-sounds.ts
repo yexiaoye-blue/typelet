@@ -60,14 +60,12 @@ export function persistSoundPreference(value: SoundPreference) {
 
 const packFiles = new Map(keySoundPacks.map(pack => [pack.id, pack.file]));
 // Most packs peak around -21 to -32 dBFS. Default is about -10 dBFS.
-// A fixed 1.8 gain is only +5 dB, and the old compressor pulled Default
-// back to about -10 dBFS, so the boost was not actually heard. Full volume
-// now lands each pack near -3 dBFS. Clicks that arrive late, or while the
-// output is already behind, are dropped instead of playing as a burst.
-const normalClickPeak = 10 ** (-3 / 20);
+// Full volume brings each pack to about -1 dBFS. A click is never stopped
+// when the next key arrives; cutting the tail is what made the sound seem
+// interrupted and quieter than the recording.
+const normalClickPeak = 10 ** (-1 / 20);
 const maxMakeup = 32;
-const maxVoices = 4;
-const voiceOverrunMs = 160;
+const maxVoices = 8;
 
 export function keySoundMakeup(peak: number) {
   if (!Number.isFinite(peak) || peak <= 0.00001) return 1;
@@ -89,14 +87,7 @@ let queued = false;
 let queuedPack = '';
 let queuedVolume = 0;
 
-type Voice = {
-  node: AudioBufferSourceNode;
-  gain: GainNode;
-  startedAt: number;
-  durationMs: number;
-};
-
-let voices: Voice[] = [];
+let voices: Array<{ node: AudioBufferSourceNode; gain: GainNode }> = [];
 
 function audioContext() {
   if (!context) {
@@ -118,37 +109,16 @@ function bufferPeak(decoded: AudioBuffer) {
   return peak;
 }
 
-function detachVoice(voice: Voice) {
-  voice.node.onended = null;
-  try { voice.node.stop(); } catch { /* The click already finished. */ }
-  try { voice.node.disconnect(); } catch { /* The node is already detached. */ }
-  try { voice.gain.disconnect(); } catch { /* The node is already detached. */ }
-}
-
-function outputBackedUp(now: number) {
-  const healthy: Voice[] = [];
-  let backedUp = false;
-  for (const voice of voices) {
-    if (now - voice.startedAt <= voice.durationMs + voiceOverrunMs) {
-      healthy.push(voice);
-      continue;
-    }
-    backedUp = true;
-    detachVoice(voice);
-  }
-  voices = healthy;
-  return backedUp || voices.length >= maxVoices;
-}
-
 function startVoice(decoded: AudioBuffer, volumePercent: number) {
-  if (!context || context.state !== 'running' || voices.length >= maxVoices) return false;
+  if (!context || context.state !== 'running') return false;
+  if (voices.length >= maxVoices) return false;
   const voiceGain = context.createGain();
   voiceGain.gain.value = volumePercent * 0.01 * packMakeup;
   const node = context.createBufferSource();
   node.buffer = decoded;
   node.connect(voiceGain);
   voiceGain.connect(context.destination);
-  const voice: Voice = { node, gain: voiceGain, startedAt: performance.now(), durationMs: decoded.duration * 1000 };
+  const voice = { node, gain: voiceGain };
   node.onended = () => {
     const index = voices.findIndex(item => item.node === node);
     if (index >= 0) voices.splice(index, 1);
@@ -165,10 +135,6 @@ function startVoice(decoded: AudioBuffer, volumePercent: number) {
 
 function flushPending() {
   if (!queued || !buffer || loadedPack !== queuedPack || context?.state !== 'running') return;
-  if (outputBackedUp(performance.now())) {
-    queued = false;
-    return;
-  }
   const volume = queuedVolume;
   queued = false;
   startVoice(buffer, volume);
@@ -210,11 +176,6 @@ export function unlockKeySound() {
 export function playKeySound(pack: string, volumePercent: number) {
   if (volumePercent <= 0 || typeof AudioContext === 'undefined') return;
   const ctx = context ?? audioContext();
-  if (outputBackedUp(performance.now())) {
-    queued = false;
-    if (ctx.state === 'suspended') void ctx.resume();
-    return;
-  }
   if (buffer && loadedPack === pack && ctx.state === 'running') {
     queued = false;
     startVoice(buffer, volumePercent);
