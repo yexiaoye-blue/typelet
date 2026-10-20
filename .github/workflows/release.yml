@@ -211,12 +211,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out source and tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
       - name: Download all platform packages
         uses: actions/download-artifact@v4
         with:
           pattern: typelet-*
           path: release-artifacts
           merge-multiple: true
+
+      - name: Describe additions and fixes
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: python3 .github/scripts/release-notes.py > release-notes.md
 
       - name: Flatten package files
         run: |
@@ -234,7 +245,7 @@ jobs:
           name: ${{ needs.metadata.outputs.name }}
           prerelease: ${{ needs.metadata.outputs.prerelease }}
           make_latest: ${{ needs.metadata.outputs.prerelease != 'true' }}
-          generate_release_notes: true
+          body_path: release-notes.md
           overwrite_files: true
           files: release-assets/*
           fail_on_unmatched_files: true
