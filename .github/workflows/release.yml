@@ -229,11 +229,32 @@ jobs:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: python3 .github/scripts/release-notes.py > release-notes.md
 
-      - name: Flatten package files
+      - name: Name packages by platform and architecture
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
         run: |
+          set -euo pipefail
           mkdir -p release-assets
-          find release-artifacts -type f -exec cp {} release-assets/ \;
-          test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
+
+          mapfile -d '' rpms < <(find release-artifacts -type f -name '*.rpm' -print0)
+          mapfile -d '' debs < <(find release-artifacts -type f -name '*.deb' -print0)
+          mapfile -d '' appimages < <(find release-artifacts -type f -iname '*.appimage' -print0)
+          mapfile -d '' msis < <(find release-artifacts -type f -name '*.msi' -print0)
+          mapfile -d '' nsis_installers < <(find release-artifacts -type f -name '*.exe' -print0)
+
+          test "${#rpms[@]}" -eq 1
+          test "${#debs[@]}" -eq 1
+          test "${#appimages[@]}" -eq 1
+          test "${#msis[@]}" -eq 1
+          test "${#nsis_installers[@]}" -eq 1
+
+          cp "${rpms[0]}" "release-assets/typelet-${RELEASE_TAG}-fedora-x86_64.rpm"
+          cp "${debs[0]}" "release-assets/typelet-${RELEASE_TAG}-linux-x86_64.deb"
+          cp "${appimages[0]}" "release-assets/typelet-${RELEASE_TAG}-linux-x86_64.AppImage"
+          cp "${msis[0]}" "release-assets/typelet-${RELEASE_TAG}-windows-x86_64.msi"
+          cp "${nsis_installers[0]}" "release-assets/typelet-${RELEASE_TAG}-windows-x86_64-setup.exe"
+
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
 
       - name: Publish release and attach packages
         uses: softprops/action-gh-release@v2
