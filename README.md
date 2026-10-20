@@ -97,7 +97,7 @@ npm run dev
 npm run web:dev
 ~~~
 
-地址是 `http://127.0.0.1:5173/`。检查用 `npm test`。打 RPM：
+地址是 `http://127.0.0.1:6670/`。检查用 `npm test`。打 RPM：
 
 ~~~bash
 npx tauri build --bundles rpm
