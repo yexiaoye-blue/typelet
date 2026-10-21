@@ -17,6 +17,8 @@ dnf install -y \
   make \
   pkgconf-pkg-config \
   webkit2gtk4.1-devel \
+  alsa-lib-devel \
+  pipewire-devel \
   gtk3-devel \
   openssl-devel \
   librsvg2-devel \

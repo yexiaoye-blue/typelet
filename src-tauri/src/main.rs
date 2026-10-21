@@ -12,6 +12,9 @@ use typelet_typing::{
 
 mod agents;
 mod fonts;
+mod key_sound;
+
+use key_sound::{append_log, load_key_sound, log_path, play_key_sound};
 
 struct AppState {
     content: Mutex<ContentCatalog>,
@@ -40,17 +43,8 @@ fn command_error(error: ContentError) -> String {
 
 #[tauri::command]
 fn log_key_sound(app: tauri::AppHandle, line: String) -> Result<(), String> {
-    let directory = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let path = directory.join("key-sound.log");
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| error.to_string())?;
-    use std::io::Write;
-    writeln!(file, "{line}").map_err(|error| error.to_string())?;
-    Ok(())
+    let path = log_path(&app)?;
+    append_log(&path, &line)
 }
 
 fn save_content(state: &AppState) -> Result<(), String> {
@@ -410,6 +404,7 @@ fn main() {
                 session: Mutex::new(session),
                 storage_path,
             });
+            app.manage(key_sound::KeyAudio::new());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -438,7 +433,9 @@ fn main() {
             agents::set_agent_enabled,
             agents::get_agent_detail,
             agents::save_agent_detail,
-            log_key_sound
+            log_key_sound,
+            load_key_sound,
+            play_key_sound
         ])
         .run(tauri::generate_context!())
         .expect("error while running Typelet");
