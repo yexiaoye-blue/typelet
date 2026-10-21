@@ -12,6 +12,9 @@ use typelet_typing::{
 
 mod agents;
 mod fonts;
+mod key_sound;
+
+use key_sound::{append_log, load_key_sound, log_path, play_key_sound};
 
 struct AppState {
     content: Mutex<ContentCatalog>,
@@ -36,6 +39,12 @@ struct CatalogUpdate {
 
 fn command_error(error: ContentError) -> String {
     error.to_string()
+}
+
+#[tauri::command]
+fn log_key_sound(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    let path = log_path(&app)?;
+    append_log(&path, &line)
 }
 
 fn save_content(state: &AppState) -> Result<(), String> {
@@ -395,6 +404,7 @@ fn main() {
                 session: Mutex::new(session),
                 storage_path,
             });
+            app.manage(key_sound::KeyAudio::new());
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -422,7 +432,10 @@ fn main() {
             agents::get_agents_config,
             agents::set_agent_enabled,
             agents::get_agent_detail,
-            agents::save_agent_detail
+            agents::save_agent_detail,
+            log_key_sound,
+            load_key_sound,
+            play_key_sound
         ])
         .run(tauri::generate_context!())
         .expect("error while running Typelet");
