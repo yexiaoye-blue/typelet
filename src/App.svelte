@@ -26,7 +26,7 @@
   import { version as packagedVersion } from '../package.json';
   import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
   import { ScrollMemory } from './scroll-memory';
-  import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
+  import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, traceKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
   import SettingsSelect, { type SettingsSelectOption } from './components/SettingsSelect.svelte';
 
   type Locale = 'zh' | 'en';
@@ -443,7 +443,13 @@
   function playPracticeKey(previous: string, next: string, occurredAt: number) {
     if (!sound.keyEnabled || sound.keyVolume <= 0 || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
     if (next.length <= previous.length || !next.startsWith(previous)) return;
-    if (keyEventLag(occurredAt) > 70) return;
+    const lag = Math.round(keyEventLag(occurredAt));
+    const added = next.length - previous.length;
+    if (lag > 70) {
+      traceKeySound('practice-drop-late', { lag, added });
+      return;
+    }
+    traceKeySound('practice-key', { lag, added });
     playKeySound(sound.pack, sound.keyVolume);
   }
 

@@ -72,6 +72,28 @@ export function keySoundMakeup(peak: number) {
   return Math.min(maxMakeup, normalClickPeak / peak);
 }
 
+let writeKeySoundLog: Promise<(line: string) => Promise<unknown>> | undefined;
+
+function audioClock() {
+  if (!context) return { state: 'none', audioMs: 0, baseMs: 0, outputMs: 0, voices: voices.length };
+  const outputLatency = 'outputLatency' in context ? context.outputLatency : 0;
+  return {
+    state: context.state,
+    audioMs: Math.round(context.currentTime * 1000),
+    baseMs: Math.round(context.baseLatency * 1000),
+    outputMs: Math.round(outputLatency * 1000),
+    voices: voices.length,
+  };
+}
+
+export function traceKeySound(event: string, detail: Record<string, unknown> = {}) {
+  const line = JSON.stringify({ t: new Date().toISOString(), wall: Math.round(performance.now()), event, ...audioClock(), ...detail });
+  console.info('[typelet-key]', line);
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
+  writeKeySoundLog ??= import('@tauri-apps/api/core').then(({ invoke }) => (message: string) => invoke('log_key_sound', { line: message }));
+  void writeKeySoundLog.then(write => write(line)).catch(() => { /* Logging must not affect playback. */ });
+}
+
 function soundUrl(file: string) {
   return new URL('sounds/key-sound/' + encodeURIComponent(file), document.baseURI).href;
 }
@@ -110,8 +132,15 @@ function bufferPeak(decoded: AudioBuffer) {
 }
 
 function startVoice(decoded: AudioBuffer, volumePercent: number) {
-  if (!context || context.state !== 'running') return false;
-  if (voices.length >= maxVoices) return false;
+  const startedWall = performance.now();
+  if (!context || context.state !== 'running') {
+    traceKeySound('skip-not-running', { volume: volumePercent });
+    return false;
+  }
+  if (voices.length >= maxVoices) {
+    traceKeySound('skip-full', { volume: volumePercent });
+    return false;
+  }
   const voiceGain = context.createGain();
   voiceGain.gain.value = volumePercent * 0.01 * packMakeup;
   const node = context.createBufferSource();
@@ -120,6 +149,7 @@ function startVoice(decoded: AudioBuffer, volumePercent: number) {
   voiceGain.connect(context.destination);
   const voice = { node, gain: voiceGain };
   node.onended = () => {
+    traceKeySound('ended', { ageMs: Math.round(performance.now() - startedWall), bufferMs: Math.round(decoded.duration * 1000) });
     const index = voices.findIndex(item => item.node === node);
     if (index >= 0) voices.splice(index, 1);
     try { node.disconnect(); } catch { /* The node is already detached. */ }
@@ -127,16 +157,23 @@ function startVoice(decoded: AudioBuffer, volumePercent: number) {
   };
   try { node.start(); } catch {
     try { node.disconnect(); voiceGain.disconnect(); } catch { /* The node never started. */ }
+    traceKeySound('start-failed', { bufferMs: Math.round(decoded.duration * 1000) });
     return false;
   }
+  traceKeySound('started', { bufferMs: Math.round(decoded.duration * 1000), volume: volumePercent, makeup: Number(packMakeup.toFixed(2)) });
   voices.push(voice);
   return true;
 }
 
 function flushPending() {
-  if (!queued || !buffer || loadedPack !== queuedPack || context?.state !== 'running') return;
+  if (!queued) return;
+  if (!buffer || loadedPack !== queuedPack || context?.state !== 'running') {
+    traceKeySound('flush-wait', { hasBuffer: Boolean(buffer), loadedPack, queuedPack });
+    return;
+  }
   const volume = queuedVolume;
   queued = false;
+  traceKeySound('flush', { volume });
   startVoice(buffer, volume);
 }
 
@@ -176,11 +213,14 @@ export function unlockKeySound() {
 export function playKeySound(pack: string, volumePercent: number) {
   if (volumePercent <= 0 || typeof AudioContext === 'undefined') return;
   const ctx = context ?? audioContext();
+  const ready = Boolean(buffer && loadedPack === pack);
+  traceKeySound('request', { pack, volume: volumePercent, ready });
   if (buffer && loadedPack === pack && ctx.state === 'running') {
     queued = false;
     startVoice(buffer, volumePercent);
     return;
   }
+  traceKeySound('queued', { pack, volume: volumePercent, ready });
   queued = true;
   queuedPack = pack;
   queuedVolume = volumePercent;

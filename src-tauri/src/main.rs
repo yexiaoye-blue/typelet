@@ -38,6 +38,21 @@ fn command_error(error: ContentError) -> String {
     error.to_string()
 }
 
+#[tauri::command]
+fn log_key_sound(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    let directory = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let path = directory.join("key-sound.log");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|error| error.to_string())?;
+    use std::io::Write;
+    writeln!(file, "{line}").map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn save_content(state: &AppState) -> Result<(), String> {
     let catalog = state
         .content
@@ -422,7 +437,8 @@ fn main() {
             agents::get_agents_config,
             agents::set_agent_enabled,
             agents::get_agent_detail,
-            agents::save_agent_detail
+            agents::save_agent_detail,
+            log_key_sound
         ])
         .run(tauri::generate_context!())
         .expect("error while running Typelet");
