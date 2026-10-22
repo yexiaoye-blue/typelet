@@ -212,9 +212,10 @@ progress::-moz-progress-bar { background: var(--action); }
 .library-heading { margin: 18px 4px 8px; color: var(--muted); font-size: 12px; font-weight: 600; }
 .library-row { display: flex; align-items: center; gap: 8px; }
 .library-row + .library-row { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--hairline); }
-.library-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; padding: 0; text-align: left; }
+.library-main { position: relative; isolation: isolate; display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; padding: 0; text-align: left; }
+.library-main::before { content: ""; position: absolute; z-index: -1; top: -7px; bottom: -7px; left: -8px; width: calc(var(--progress, 0) * (100% + 16px) / 100); border-radius: 8px; background: color-mix(in srgb, var(--action) 18%, transparent); pointer-events: none; }
 .library-main strong { overflow: hidden; color: var(--ink); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.library-main span { color: var(--muted); font-size: 11px; }
+.library-main span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .library-check { flex: none; color: var(--action); font-size: 16px; font-weight: 600; }
 .library-remove { flex: none; padding: 4px 0; color: var(--error); font-size: 12px; }
 .settings-copy { display: flex; flex-direction: column; gap: 6px; }

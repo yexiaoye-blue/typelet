@@ -60,6 +60,7 @@ fn save_content(state: &AppState) -> Result<(), String> {
     let mut stored = catalog.stored_state();
     stored.sentence_index = sentence_index;
     stored.word_index = word_index;
+    stored.positions = session.positions().clone();
     let json = serde_json::to_vec_pretty(&stored).map_err(|error| error.to_string())?;
     fs::write(&state.storage_path, json)
         .map_err(|error| format!("{}: {error}", state.storage_path.display()))
@@ -77,6 +78,18 @@ fn snapshot(state: &AppState, milliseconds: u64) -> Result<PracticeSnapshot, Str
     session
         .snapshot(&catalog, milliseconds)
         .map_err(command_error)
+}
+
+fn content_snapshot(state: &AppState) -> Result<ContentCatalogSnapshot, String> {
+    let catalog = state
+        .content
+        .lock()
+        .map_err(|_| "内容状态锁定失败".to_owned())?;
+    let session = state
+        .session
+        .lock()
+        .map_err(|_| "练习状态锁定失败".to_owned())?;
+    Ok(catalog.snapshot_with_positions(session.positions()))
 }
 
 #[tauri::command]
@@ -179,11 +192,7 @@ fn select_word_chapter(
 
 #[tauri::command]
 fn get_content_catalog(state: State<'_, AppState>) -> Result<ContentCatalogSnapshot, String> {
-    let catalog = state
-        .content
-        .lock()
-        .map_err(|_| "内容状态锁定失败".to_owned())?;
-    Ok(catalog.snapshot())
+    content_snapshot(&state)
 }
 
 #[tauri::command]
@@ -283,9 +292,9 @@ fn import_article(state: State<'_, AppState>, path: String) -> Result<ImportResu
         .lock()
         .map_err(|_| "内容状态锁定失败".to_owned())?;
     catalog.add_article(article);
-    let catalog_snapshot = catalog.snapshot();
     drop(catalog);
     let current = snapshot(&state, 0)?;
+    let catalog_snapshot = content_snapshot(&state)?;
     save_content(&state)?;
     Ok(ImportResult {
         report,
@@ -303,9 +312,9 @@ fn import_word_book(state: State<'_, AppState>, path: String) -> Result<ImportRe
         .lock()
         .map_err(|_| "内容状态锁定失败".to_owned())?;
     catalog.add_word_book(book);
-    let catalog_snapshot = catalog.snapshot();
     drop(catalog);
     let current = snapshot(&state, 0)?;
+    let catalog_snapshot = content_snapshot(&state)?;
     save_content(&state)?;
     Ok(ImportResult {
         report,
@@ -324,9 +333,9 @@ fn remove_collection(state: &AppState, sentence: bool, id: &str) -> Result<Catal
     } else {
         catalog.remove_word_book(id).map_err(command_error)?;
     }
-    let catalog_snapshot = catalog.snapshot();
     drop(catalog);
     let current = snapshot(state, 0)?;
+    let catalog_snapshot = content_snapshot(state)?;
     save_content(state)?;
     Ok(CatalogUpdate {
         catalog: catalog_snapshot,
@@ -395,9 +404,16 @@ fn main() {
             };
             let sentence_index = stored.sentence_index;
             let word_index = stored.word_index;
+            let mut positions = stored.positions.clone();
+            if let Some(id) = stored.article_id.clone() {
+                positions.insert(id, sentence_index);
+            }
+            if let Some(id) = stored.word_book_id.clone() {
+                positions.insert(id, word_index);
+            }
             let content = ContentCatalog::from_stored(stored).map_err(command_error)?;
             let session =
-                PracticeSession::with_stored_progress(&content, sentence_index, word_index)
+                PracticeSession::with_positions(&content, sentence_index, word_index, positions)
                     .map_err(command_error)?;
             app.manage(AppState {
                 content: Mutex::new(content),

@@ -1226,6 +1226,13 @@
   async function openLibrary() {
     importError = '';
     rememberSettingsScroll();
+    if (isTauri) {
+      try {
+        catalog = await invoke<ContentCatalogSnapshot>('get_content_catalog');
+      } catch (error) {
+        importError = String(error);
+      }
+    }
     libraryOpen = true;
     await restoreSettingsScroll('library');
   }
@@ -1486,9 +1493,9 @@
           <section class="settings-group" aria-label={t.libraryBuiltin}>
             {#each builtinLibraries as item (item.id)}
               <div class="library-row">
-                <button class="library-main" onclick={() => selectLibrary(item.id)}>
+                <button class="library-main" style="--progress: {item.progress}" onclick={() => selectLibrary(item.id)}>
                   <strong>{item.title}</strong>
-                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
+                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit} · {item.progress}%</span>
                 </button>
                 {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
               </div>
@@ -1500,9 +1507,9 @@
           <section class="settings-group" aria-label={t.libraryImported}>
             {#each importedLibraries as item (item.id)}
               <div class="library-row">
-                <button class="library-main" onclick={() => selectLibrary(item.id)}>
+                <button class="library-main" style="--progress: {item.progress}" onclick={() => selectLibrary(item.id)}>
                   <strong>{item.title}</strong>
-                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
+                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit} · {item.progress}%</span>
                 </button>
                 {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
                 <button class="library-remove" aria-label={t.removeLibrary + ' ' + item.title} onclick={() => removeLibrary(item.id)}>{t.removeLibrary}</button>
