@@ -29,13 +29,25 @@
   import { bundledFont, fontChoices, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
   import { ScrollMemory } from './scroll-memory';
   import { keySoundPacks, keysAudible, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, readingAudible, traceKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
-  import SettingsSelect, { type SettingsSelectOption } from './components/SettingsSelect.svelte';
+  import type { SettingsSelectOption } from './components/SettingsSelect.svelte';
+  import {
+    detectSystemLocale,
+    loadAutoAdvanceWords,
+    loadChapterLength,
+    loadLocalePreference,
+    loadPracticeOrder,
+    loadPronunciationPreference,
+    loadThemePreference,
+    type Locale,
+    type LocalePreference,
+    type PronunciationPreference,
+    type Theme,
+    type ThemePreference,
+  } from './preferences';
+  import PracticePage from './practice/PracticePage.svelte';
+  import SettingsPage from './settings/SettingsPage.svelte';
+  import TitleBar from './shell/TitleBar.svelte';
 
-  type Locale = 'zh' | 'en';
-  type LocalePreference = 'system' | Locale;
-  type Theme = 'light' | 'dark';
-  type ThemePreference = 'system' | Theme;
-  type PronunciationPreference = 'uk' | 'us';
   type Statistics = PracticeSnapshot['stats'];
   type AgentId = 'codex' | 'cursor' | 'dsh';
   type AgentSummary = { id: AgentId; name: string; enabled: boolean; supported: boolean; configPath: string; format: string; event: string };
@@ -351,28 +363,9 @@
     }
   });
 
-  function detectSystemLocale(): Locale {
-    const language = typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : 'en';
-    return language.startsWith('zh') ? 'zh' : 'en';
-  }
-
-  function loadLocalePreference(): LocalePreference {
-    try {
-      const value = localStorage.getItem('typelet.locale.preference');
-      return value === 'zh' || value === 'en' || value === 'system' ? value : 'system';
-    } catch { return 'system'; }
-  }
-
   function persistLocalePreference(value: LocalePreference) {
     localePreference = value;
     try { localStorage.setItem('typelet.locale.preference', value); } catch { /* browser storage may be unavailable */ }
-  }
-
-  function loadThemePreference(): ThemePreference {
-    try {
-      const value = localStorage.getItem('typelet.theme.preference');
-      return value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
-    } catch { return 'system'; }
   }
 
   function persistThemePreference(value: ThemePreference) {
@@ -380,21 +373,9 @@
     try { localStorage.setItem('typelet.theme.preference', value); } catch { /* browser storage may be unavailable */ }
   }
 
-  function loadPronunciationPreference(): PronunciationPreference {
-    try {
-      return localStorage.getItem('typelet.word.pronunciation') === 'us' ? 'us' : 'uk';
-    } catch { return 'uk'; }
-  }
-
   function persistPronunciationPreference(value: PronunciationPreference) {
     pronunciationPreference = value;
     try { localStorage.setItem('typelet.word.pronunciation', value); } catch { /* browser storage may be unavailable */ }
-  }
-
-  function loadAutoAdvanceWords(): boolean {
-    try {
-      return localStorage.getItem('typelet.word.autoAdvance') !== 'false';
-    } catch { return true; }
   }
 
   function persistAutoAdvanceWords(value: boolean) {
@@ -403,19 +384,6 @@
     try { localStorage.setItem('typelet.word.autoAdvance', String(value)); } catch { /* browser storage may be unavailable */ }
     if (value) speakVisibleWord(snapshot, true);
     else stopPronunciation();
-  }
-
-  function loadChapterLength() {
-    try {
-      const value = Number(localStorage.getItem('typelet.practice.chapterLength'));
-      return Number.isInteger(value) && value >= 10 ? value : 20;
-    } catch { return 20; }
-  }
-
-  function loadPracticeOrder(): PracticeOrder {
-    try {
-      return localStorage.getItem('typelet.practice.order') === 'random' ? 'random' : 'book';
-    } catch { return 'book'; }
   }
 
   function commitChapterLength(input: HTMLInputElement) {
@@ -1542,377 +1510,149 @@
 </svelte:head>
 
 <section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
-  <header class="global-nav" role="presentation" onmousedown={dragWindow}>
-    <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span>{#if snapshot.collectionTitle}<span class="brand-context" title={snapshot.collectionTitle}>{snapshot.collectionTitle}</span>{/if}</span>
-    <div class="window-actions">
-      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? navigateBack() : openSettings()}>
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 3 .5-1h3l.5 1 .5 1 1 .5 1-.5 2 2-.5 1 .5 1 1 .5 1 .5v3l-1 .5-1 .5-.5 1 .5 1-2 2-1-.5-1 .5-.5 1-.5 1h-3l-.5-1-.5-1-1-.5-1 .5-2-2 .5-1-.5-1-1-.5-1-.5v-3l1-.5 1-.5.5-1-.5-1 2-2 1 .5 1-.5.5-1Z" /><circle cx="10" cy="10" r="2.5" /></svg>
-      </button>
-      {#if isTauri}
-        <button class:pinned aria-label={pinned ? t.unpin : t.pin} title={pinned ? t.unpin : t.pin} aria-pressed={pinned} onclick={togglePinned}>
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l-1 6 3 3H5l3-3-1-6ZM10 12v5" /></svg>
-        </button>
-        <button aria-label={t.minimize} title={t.minimize} onclick={minimize}>−</button>
-        <button aria-label={t.close} title={t.close} onclick={close}>×</button>
-      {/if}
-    </div>
-  </header>
+  <TitleBar
+    {dragWindow}
+    {t}
+    {snapshot}
+    {view}
+    {navigateBack}
+    {openSettings}
+    {isTauri}
+    {pinned}
+    {togglePinned}
+    {minimize}
+    {close}
+  />
 
   {#if view === 'settings'}
-    <main class="settings-page" bind:this={settingsPage}>
-      {#if selectedAgent}
-        <div class="settings-heading">
-          <button bind:this={backButton} class="back-button" aria-label={t.agentBack} title={t.agentBack} onclick={navigateBack}>←</button>
-          <h1>{agentDetail?.name ?? t.agentLoading}</h1>
-        </div>
-        <section class="settings-group agent-detail" aria-label={t.agentDetail}>
-          {#if agentDetailLoading}
-            <p class="agent-note">{t.agentLoading}</p>
-          {:else if agentDetail}
-            <p class="agent-note">{agentDetail.event}</p>
-            <div class="detail-meta"><span>{t.agentConfigPath}</span><code>{agentDetail.configPath || t.agentUnavailable}</code></div>
-            <div class="detail-meta"><span>{t.agentFormat}</span><code>{agentDetail.format}</code></div>
-            <p class="agent-note">{agentDetail.note}</p>
-            {#if agentDetail.editable}
-              <textarea class="agent-editor" aria-label={t.agentEditor} bind:value={agentDetailDraft} spellcheck="false"></textarea>
-              <div class="detail-actions"><button class="secondary" onclick={closeAgentDetail}>{t.cancel}</button><button class="primary" disabled={agentDetailSaving} onclick={saveAgentDetail}>{agentDetailSaving ? t.saving : t.save}</button></div>
-            {:else}
-              <p class="agent-note">{t.agentUnavailable}</p>
-            {/if}
-          {/if}
-          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
-        </section>
-      {:else if libraryOpen}
-        <div class="settings-heading">
-          <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
-          <h1>{t.library}</h1>
-        </div>
-        <p class="library-intro">{t.libraryHint}</p>
-        {#if builtinLibraries.length}
-          {#if importedLibraries.length}<h2 class="library-heading">{t.libraryBuiltin}</h2>{/if}
-          <section class="settings-group" aria-label={t.libraryBuiltin}>
-            {#each builtinLibraries as item (item.id)}
-              <div class="library-row">
-                <button class="library-main" style="--progress: {item.progress}" onclick={() => selectLibrary(item.id)}>
-                  <strong>{item.title}</strong>
-                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit} · {item.progress}%</span>
-                </button>
-                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
-              </div>
-            {/each}
-          </section>
-        {/if}
-        {#if importedLibraries.length}
-          <h2 class="library-heading">{t.libraryImported}</h2>
-          <section class="settings-group" aria-label={t.libraryImported}>
-            {#each importedLibraries as item (item.id)}
-              <div class="library-row">
-                <button class="library-main" style="--progress: {item.progress}" onclick={() => selectLibrary(item.id)}>
-                  <strong>{item.title}</strong>
-                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit} · {item.progress}%</span>
-                </button>
-                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
-                <button class="library-remove" aria-label={t.removeLibrary + ' ' + item.title} onclick={() => removeLibrary(item.id)}>{t.removeLibrary}</button>
-              </div>
-            {/each}
-          </section>
-        {/if}
-        {#if isTauri}
-          <div class="detail-actions">
-            {#if snapshot.mode === 'sentence'}
-              <button class="secondary" disabled={importLoading} onclick={() => importContent('article')}>{t.importArticle}</button>
-            {:else}
-              <button class="secondary" disabled={importLoading} onclick={() => importContent('wordBook')}>{t.importWordBook}</button>
-            {/if}
-          </div>
-        {:else}
-          <p class="agent-note">{t.previewImportHint}</p>
-        {/if}
-        {#if pendingImport}
-          <div class="import-preview">
-            <strong>{pendingImport.report.title}</strong>
-            <span>{t.importPreview}: {pendingImport.report.count} · {pendingImport.report.firstItem ?? t.missing}</span>
-            {#if pendingImport.kind === 'wordBook'}<span>{t.duplicates}: {pendingImport.report.duplicateCount}</span>{/if}
-            <div class="detail-actions"><button class="secondary" onclick={cancelImport}>{t.cancel}</button><button class="primary" disabled={importLoading} onclick={() => void confirmImport()}>{t.confirmImport}</button></div>
-          </div>
-        {/if}
-        {#if importMessage}<p class="agent-note" role="status">{importMessage}</p>{/if}
-        {#if importError}<p class="agent-error" role="alert">{importError}</p>{/if}
-        {#if snapshot.mode === 'word'}
-          <p class="agent-note">{t.dictionaryNotice}</p>
-        {:else if libraries.find((item) => item.selected)?.source}
-          <p class="agent-note">{libraries.find((item) => item.selected)?.source}</p>
-        {/if}
-      {:else}
-      <div class="settings-heading">
-        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
-        <h1>{t.settingsTitle}</h1>
-      </div>
-
-      <section class="settings-group" aria-label={t.theme}>
-        <div class="settings-copy"><strong>{t.theme}</strong><span>{t.themeHint}</span></div>
-        <div class="segmented-control">
-          <button class:selected={themePreference === 'system'} aria-pressed={themePreference === 'system'} onclick={() => persistThemePreference('system')}>{t.system}</button>
-          <button class:selected={themePreference === 'light'} aria-pressed={themePreference === 'light'} onclick={() => persistThemePreference('light')}>{t.light}</button>
-          <button class:selected={themePreference === 'dark'} aria-pressed={themePreference === 'dark'} onclick={() => persistThemePreference('dark')}>{t.dark}</button>
-        </div>
-      </section>
-
-      <section class="settings-group" aria-label={t.interfaceLanguage}>
-        <div class="settings-copy"><strong>{t.interfaceLanguage}</strong><span>{t.languageHint}</span></div>
-        <div class="segmented-control">
-          <button class:selected={localePreference === 'system'} aria-pressed={localePreference === 'system'} onclick={() => persistLocalePreference('system')}>{t.system}</button>
-          <button class:selected={localePreference === 'zh'} aria-pressed={localePreference === 'zh'} onclick={() => persistLocalePreference('zh')}>{t.chinese}</button>
-          <button class:selected={localePreference === 'en'} aria-pressed={localePreference === 'en'} onclick={() => persistLocalePreference('en')}>{t.english}</button>
-        </div>
-      </section>
-
-      <section class="settings-group content-settings" aria-label={t.contentSettings}>
-        <div class="settings-copy"><strong>{t.practiceMode}</strong><span>{t.contentHint}</span></div>
-        <div class="segmented-control two-options" role="group" aria-label={t.practiceMode}>
-          <button class:selected={snapshot.mode === 'sentence'} aria-pressed={snapshot.mode === 'sentence'} onclick={() => changeMode('sentence')}>{t.sentenceMode}</button>
-          <button class:selected={snapshot.mode === 'word'} aria-pressed={snapshot.mode === 'word'} onclick={() => changeMode('word')}>{t.wordMode}</button>
-        </div>
-        <div class="setting-block">
-          <div class="settings-copy">
-            <strong>{t.chapterLength}</strong>
-            <span>{t.chapterLengthHint}<span class="chapter-length-bounds"> · {chapterLengthMin}–{chapterLengthMax}</span></span>
-          </div>
-          <div class="chapter-stepper" class:is-disabled={chapterLengthMin === chapterLengthMax} role="group" aria-label={t.chapterLength}>
-            <button type="button" aria-label={t.decreaseChapterLength} disabled={chapterLengthMin === chapterLengthMax || effectiveChapterLength <= chapterLengthMin} onclick={() => stepChapterLength(-1)}>−</button>
-            <input inputmode="numeric" autocomplete="off" spellcheck="false" value={effectiveChapterLength} disabled={chapterLengthMin === chapterLengthMax} aria-label={t.chapterLength} onchange={(event) => commitChapterLength(event.currentTarget as HTMLInputElement)} onkeydown={onChapterLengthKeydown} />
-            <button type="button" aria-label={t.increaseChapterLength} disabled={chapterLengthMin === chapterLengthMax || effectiveChapterLength >= chapterLengthMax} onclick={() => stepChapterLength(1)}>+</button>
-          </div>
-        </div>
-        <div class="setting-block">
-          <div class="settings-copy"><strong>{t.practiceOrder}</strong><span>{t.practiceOrderHint}</span></div>
-          <div class="segmented-control two-options" role="group" aria-label={t.practiceOrder}>
-            <button class:selected={practiceOrder === 'book'} aria-pressed={practiceOrder === 'book'} onclick={() => choosePracticeOrder('book')}>{t.bookOrder}</button>
-            <button class:selected={practiceOrder === 'random'} aria-pressed={practiceOrder === 'random'} onclick={() => choosePracticeOrder('random')}>{t.randomOrder}</button>
-          </div>
-        </div>
-        {#if snapshot.mode === 'word'}
-          <div class="setting-block">
-            <div class="settings-copy"><strong>{t.wordPronunciation}</strong><span>{t.wordPronunciationHint}</span></div>
-            <div class="segmented-control two-options" role="group" aria-label={t.wordPronunciation}>
-              <button class:selected={pronunciationPreference === 'uk'} aria-pressed={pronunciationPreference === 'uk'} onclick={() => persistPronunciationPreference('uk')}>{t.britishPronunciation}</button>
-              <button class:selected={pronunciationPreference === 'us'} aria-pressed={pronunciationPreference === 'us'} onclick={() => persistPronunciationPreference('us')}>{t.americanPronunciation}</button>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="settings-copy"><strong>{t.autoAdvanceWords}</strong><span>{t.autoAdvanceWordsHint}</span></div>
-            <button class="agent-switch" class:on={autoAdvanceWords} role="switch" aria-checked={autoAdvanceWords} aria-label={t.autoAdvanceWords} onclick={() => persistAutoAdvanceWords(!autoAdvanceWords)}><span></span></button>
-          </div>
-        {/if}
-        <button class="nav-row" onclick={openLibrary}>
-          <strong>{t.library}</strong>
-          <span class="nav-value">{snapshot.collectionTitle}</span>
-          <span class="chevron" aria-hidden="true">›</span>
-        </button>
-      </section>
-
-
-      <section class="settings-group" aria-label={t.soundSettings}>
-        <div class="setting-row sound-header">
-          <div class="settings-copy"><strong>{t.soundSettings}</strong><span>{t.soundSettingsHint}</span></div>
-          <button type="button" class="agent-switch" class:on={sound.enabled} role="switch" aria-checked={sound.enabled} aria-label={t.soundSettings} onclick={() => setSoundEnabled(!sound.enabled)}><span></span></button>
-        </div>
-        <div class="setting-block" class:is-disabled={!sound.enabled}>
-          <div class="volume-control" class:is-muted={sound.speechMuted} style:--volume={sound.speechVolume + '%'}>
-            <span id="reading-volume">{t.speechVolume}</span>
-            <button type="button" class="speaker speaker-inline mute-button" class:is-muted={sound.speechMuted} aria-pressed={sound.speechMuted} aria-label={sound.speechMuted ? t.unmuteReading : t.muteReading} disabled={!sound.enabled} onclick={() => setSpeechMuted(!sound.speechMuted)}>
-              {#if sound.speechMuted}
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.5 21 14.5M21 9.5 16 14.5" /></svg>
-              {:else}
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
-              {/if}
-            </button>
-            <input type="range" min="0" max="100" step="1" value={sound.speechVolume} aria-labelledby="reading-volume" disabled={!sound.enabled} oninput={setSpeechVolume} />
-            <span class="volume-value">{sound.speechVolume}%</span>
-          </div>
-        </div>
-        <div class="setting-block" class:is-disabled={!sound.enabled}>
-          <div class="volume-control" class:is-muted={sound.keyMuted} style:--volume={sound.keyVolume + '%'}>
-            <span id="key-volume">{t.keySound}</span>
-            <button type="button" class="speaker speaker-inline mute-button" class:is-muted={sound.keyMuted} aria-pressed={sound.keyMuted} aria-label={sound.keyMuted ? t.unmuteKeySound : t.muteKeySound} disabled={!sound.enabled} onclick={() => setKeyMuted(!sound.keyMuted)}>
-              {#if sound.keyMuted}
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.5 21 14.5M21 9.5 16 14.5" /></svg>
-              {:else}
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
-              {/if}
-            </button>
-            <input type="range" min="0" max="100" step="1" value={sound.keyVolume} aria-labelledby="key-volume" disabled={!sound.enabled} oninput={setKeyVolume} />
-            <span class="volume-value">{sound.keyVolume}%</span>
-          </div>
-          <p class="sound-note">{t.keySoundHint}</p>
-          <div class="pack-control">
-            <span>{t.keySoundPack}</span>
-            <div class="sound-picker-row">
-              <SettingsSelect value={sound.pack} options={keySoundOptions} ariaLabel={t.keySoundPack} disabled={!sound.enabled} onSelect={setKeyPack} />
-              <button type="button" class="speaker sound-preview-button" aria-label={t.previewKeySound} title={t.previewKeySound} disabled={!keysAudible(sound)} onclick={() => previewKeySound(true)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-        <section class="settings-group agent-settings" aria-label={t.agents}>
-          <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
-          {#each agents as agent}
-            <div class="agent-row" class:unsupported={!agent.supported}>
-              <button class="agent-copy agent-open" aria-label={t.agentDetails + ': ' + agent.name} onclick={() => openAgentDetail(agent)}>
-                <strong>{agent.name}</strong><span>{agent.supported ? agent.event + ' · ' + agent.format : t.agentUnavailable}</span>
-              </button>
-              <button class="agent-switch" class:on={agent.enabled} role="switch" aria-checked={agent.enabled} aria-label={agent.name + ' ' + (agent.enabled ? t.enabled : t.disabled)} disabled={!agent.supported || agentLoading} onclick={() => toggleAgent(agent)}><span></span></button>
-            </div>
-          {/each}
-          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
-        </section>
-
-      <section class="settings-group font-settings" aria-label={t.font}>
-        <div class="font-heading">
-          <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
-          <button type="button" class="font-apply" disabled={fontDraft === fontPreference} onclick={applyFont}>{t.applyFont}</button>
-        </div>
-        <div class="font-sample" aria-label={t.fontSample} style:font-family={fontStack(fontPreview)}>Aa Bb 123 · 中文</div>
-        <div class="font-combobox" bind:this={fontField} onfocusout={onFontFocusOut}>
-          <div class="font-field">
-            <input
-              role="combobox"
-              aria-label={t.fontSearch}
-              aria-expanded={fontMenuOpen}
-              aria-controls="font-menu"
-              aria-autocomplete="list"
-              placeholder={fontMenuOpen ? fontLabel(fontDraft) : t.fontSearch}
-              value={fontMenuOpen ? fontQuery : fontLabel(fontDraft)}
-              onfocus={openFontMenu}
-              oninput={onFontInput}
-              onkeydown={onFontKeydown}
-            />
-            <button type="button" class="font-disclosure" aria-label={t.font} aria-expanded={fontMenuOpen} onclick={() => fontMenuOpen ? closeFontMenu() : openFontMenu()}>{fontMenuOpen ? '⌃' : '⌄'}</button>
-          </div>
-          {#if fontMenuOpen}
-            <div id="font-menu" class="font-menu" role="listbox" aria-label={t.font} style:max-height={fontMenuMaxHeight + 'px'}>
-              {#each fontChoiceList as choice, index (choice.value)}
-                <button type="button" role="option" aria-selected={choice.value === fontDraft} class:active={index === fontHighlight} onmouseenter={() => fontHighlight = index} onclick={() => chooseFont(choice.value)}>{choice.label}</button>
-              {:else}
-                <p class="font-empty">{t.fontEmpty}</p>
-              {/each}
-            </div>
-          {/if}
-        </div>
-        <div class="font-list-status">
-          <span role="status">{fontsLoading ? t.fontLoading : fontsFailed ? t.fontError : `${t.fontCount}: ${systemFonts.length}`}</span>
-          <button disabled={fontsLoading} onclick={loadFonts}>{t.refresh}</button>
-        </div>
-      </section>
-
-      <section class="settings-group version-settings" aria-label={t.version}>
-        <div class="version-row">
-          <span>{t.version}</span>
-          <span class="version-value">{appVersion}</span>
-        </div>
-      </section>
-      {/if}
-    </main>
+    <SettingsPage
+      bind:settingsPage
+      {selectedAgent}
+      bind:backButton
+      {t}
+      {navigateBack}
+      {agentDetail}
+      {agentDetailLoading}
+      bind:agentDetailDraft
+      {closeAgentDetail}
+      {agentDetailSaving}
+      {saveAgentDetail}
+      {agentError}
+      {libraryOpen}
+      {builtinLibraries}
+      {importedLibraries}
+      {selectLibrary}
+      {snapshot}
+      {removeLibrary}
+      {isTauri}
+      {importLoading}
+      {importContent}
+      {pendingImport}
+      {cancelImport}
+      {confirmImport}
+      {importMessage}
+      {importError}
+      {libraries}
+      {themePreference}
+      {persistThemePreference}
+      {localePreference}
+      {persistLocalePreference}
+      {changeMode}
+      {chapterLengthMin}
+      {chapterLengthMax}
+      {effectiveChapterLength}
+      {stepChapterLength}
+      {commitChapterLength}
+      {onChapterLengthKeydown}
+      {practiceOrder}
+      {choosePracticeOrder}
+      {pronunciationPreference}
+      {persistPronunciationPreference}
+      {autoAdvanceWords}
+      {persistAutoAdvanceWords}
+      {openLibrary}
+      {sound}
+      {setSoundEnabled}
+      {setSpeechMuted}
+      {setSpeechVolume}
+      {setKeyMuted}
+      {setKeyVolume}
+      {keySoundOptions}
+      {setKeyPack}
+      {keysAudible}
+      {previewKeySound}
+      {agents}
+      {openAgentDetail}
+      {agentLoading}
+      {toggleAgent}
+      {fontDraft}
+      {fontPreference}
+      {applyFont}
+      {fontPreview}
+      bind:fontField
+      {onFontFocusOut}
+      {fontMenuOpen}
+      {fontLabel}
+      {fontQuery}
+      {openFontMenu}
+      {onFontInput}
+      {onFontKeydown}
+      {closeFontMenu}
+      {fontMenuMaxHeight}
+      {fontChoiceList}
+      bind:fontHighlight
+      {chooseFont}
+      {fontsLoading}
+      {fontsFailed}
+      {systemFonts}
+      {loadFonts}
+      {appVersion}
+    />
   {:else}
-    <main class="practice-page" onmousedown={restorePracticeTypingFocus} onclick={restorePracticeTypingFocus}>
-      <section class="practice-tile">
-        <div class="passage-heading">
-          {#if !chapterPaused}
-            <div class="practice-controls">
-              <button type="button" class="navigation-button" aria-label={t.previousItem} title={t.previousItem} disabled={!canGoPreviousItem} onclick={() => void navigateItem(-1)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5-6 7 6 7" /></svg>
-              </button>
-              <button type="button" class="icon-button" aria-label={t.restart} title={t.restart} onclick={() => void restart()}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(12 12) scale(0.72) translate(-12 -12)"><path class="stroke heavy" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path class="stroke heavy" d="M3 3v5h5" /></g></svg>
-              </button>
-              <button type="button" class="icon-button" aria-label={practicePhase === 'running' ? t.pausePractice : t.startPractice} title={practicePhase === 'running' ? t.pausePractice : t.startPractice} onclick={togglePractice}>
-                {#if practicePhase === 'running'}
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9 5.4v13.2M15 5.4v13.2" /></svg>
-                {:else}
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9.2 5.6v12.8L18.4 12 9.2 5.6z" /></svg>
-                {/if}
-              </button>
-              <button type="button" class="navigation-button" aria-label={t.nextItem} title={t.nextItem} disabled={!canGoNextItem} onclick={() => void navigateItem(1)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 5 6 7-6 7" /></svg>
-              </button>
-            </div>
-          {/if}
-          <div class="word-navigation">
-            {#if snapshot.chapterCount > 1}
-              <div class="practice-context">
-                <SettingsSelect variant="pill" value={String(snapshot.chapterIndex - 1)} options={chapterOptions} ariaLabel={t.chapter} onSelect={chooseChapter} onClose={dismissChapterPicker} />
-                <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
-              </div>
-            {:else}
-              <div class="practice-context">
-                <span class="chapter-position">{snapshot.itemIndex}/{snapshot.itemCount}</span>
-              </div>
-            {/if}
-          </div>
-        </div>
-
-
-        <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
-          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:with-gloss={snapshot.mode === 'sentence' && snapshot.translation.length > 0} class:awaiting-start={awaitingStart} class:paused={practicePhase === 'paused' && !chapterPaused}>
-            {#if chapterPaused}
-              <div class="chapter-result" role="status">
-                <p class="chapter-result-title">{chapterResultTitle}</p>
-                <p class="chapter-result-count">{chapterTotals.words} {chapterResultUnit}</p>
-              </div>
-              <div class="chapter-actions">
-                <button class="primary" disabled={snapshot.isLastItem} onclick={() => void continueAfterChapter()}>{snapshot.isLastItem ? t.bookComplete : t.nextChapter}</button>
-                <button class="chapter-retry" onclick={() => void retryChapter()}>{t.retryChapter}</button>
-              </div>
-            {:else}
-            <div class="sentence-stack">
-              <div class="word-row">
-                <div class="word-slot">
-                  <div bind:this={textDisplay} id="passage-text" class="target" class:word-target={snapshot.mode === 'word'} aria-label={t.target} style:font-size={snapshot.mode === 'word' ? wordFontSize + 'px' : undefined}>
-                {#each expected as char, index}
-                  {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
-                {/each}
-                  </div>
-                </div>
-              </div>
-              {#if snapshot.mode === 'sentence' && snapshot.translation}
-                <p class="sentence-gloss">{snapshot.translation}</p>
-              {/if}
-            </div>
-            {#if awaitingStart}
-              <p class="start-hint">{t.pressAnyKey}</p>
-            {:else if practicePhase === 'paused' && !chapterPaused}
-              <p class="start-hint">{t.pressAnyKeyContinue}</p>
-            {/if}
-            {#if snapshot.mode === 'word' && snapshot.word}
-              <div class="phonetic-row">
-                <p class="word-phonetic">{selectedPhonetic ? selectedPhoneticLabel + ' ' + selectedPhonetic : t.missing}</p>
-                <button type="button" class="speaker speaker-inline" aria-label={t.replayPronunciation} title={t.replayPronunciation} onclick={replayWord}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
-                </button>
-              </div>
-              <p class="word-translation">{snapshot.word.trans.length ? snapshot.word.trans.join('；') : t.missingTranslation}</p>
-            {/if}
-            {/if}
-          </div>
-          <textarea bind:this={input} id="typing-capture" class="typing-capture" aria-label={t.input} aria-describedby="passage-text" style:left={`${captureX}px`} style:top={`${captureY}px`} value={draft} spellcheck="false" autocapitalize="off" autocorrect="off" readonly={stats.done}
-          onfocus={handleFocus} onblur={() => focused = false}
-          onpaste={(event) => event.preventDefault()}
-          oncompositionstart={() => { composing = true; compositionText = ''; }} oncompositionupdate={(event) => compositionText = event.data}
-          oncompositionend={handleCompositionEnd} oninput={handleInput} onkeydown={handleKeydown}></textarea>
-        </label>
-      </section>
-      <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' || snapshot.chapterCount > 1 ? snapshot.chapterProgress : stats.percent} max="100"></progress>
-      <section class="summary" class:chapter-paused={chapterPaused}>
-        <div class="stats">
-          <div><strong>{displayWpm}</strong><span>{t.speed}</span></div>
-          <div><strong>{displayAccuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
-          <div><strong>{formatDuration(displayElapsed)}</strong><span>{t.time}</span></div>
-        </div>
-      </section>
-    </main>
+    <PracticePage
+      {restorePracticeTypingFocus}
+      {chapterPaused}
+      {t}
+      {canGoPreviousItem}
+      {navigateItem}
+      {restart}
+      {practicePhase}
+      {togglePractice}
+      {canGoNextItem}
+      {snapshot}
+      {chapterOptions}
+      {chooseChapter}
+      {dismissChapterPicker}
+      {stats}
+      {awaitingStart}
+      {chapterResultTitle}
+      {chapterTotals}
+      {chapterResultUnit}
+      {continueAfterChapter}
+      {retryChapter}
+      bind:textDisplay
+      {wordFontSize}
+      {expected}
+      {typed}
+      bind:compositionText
+      {selectedPhonetic}
+      {selectedPhoneticLabel}
+      {replayWord}
+      bind:input
+      {captureX}
+      {captureY}
+      {draft}
+      {handleFocus}
+      bind:focused
+      bind:composing
+      {handleCompositionEnd}
+      {handleInput}
+      {handleKeydown}
+      {displayWpm}
+      {displayAccuracy}
+      {formatDuration}
+      {displayElapsed}
+    />
   {/if}
   <canvas bind:this={celebrationCanvas} class="celebration" aria-hidden="true"></canvas>
 </section>

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "rust-best-practices": {
+      "source": "apollographql/skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust-best-practices/SKILL.md",
+      "computedHash": "a3db351ec552ed9d36b59e547d6c1d94077867eb5bcb98b3f802dfebb0a8a248"
+    },
+    "svelte-code-writer": {
+      "source": "sveltejs/ai-tools",
+      "sourceType": "github",
+      "skillPath": "plugins/claude/svelte/skills/svelte-code-writer/SKILL.md",
+      "computedHash": "abe888cce357ab0fa0104ff2266edaf9c3a8382320b303f920cd777762a6bc85"
+    },
+    "svelte-core-bestpractices": {
+      "source": "sveltejs/ai-tools",
+      "sourceType": "github",
+      "skillPath": "plugins/claude/svelte/skills/svelte-core-bestpractices/SKILL.md",
+      "computedHash": "3cd6c1f1a92b8bf52af8120e5cb3a93b5512f83b905fd902b895adafb7225456"
+    }
+  }
+}
