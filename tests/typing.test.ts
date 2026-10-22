@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { freshPractice, limitPracticeInput, previewAdvance, previewSelectChapter, previewSelectItem, previewSnapshot, previewUpdate, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
+import { chapterOffsets, freshPractice, limitPracticeInput, previewAdvance, previewCatalog, previewSelectChapter, previewSelectItem, previewSnapshot, previewUpdate, setPreviewLayout, summarizeChapter, updatePractice, statistics } from '../packages/core/typing';
 test('typing input drops hidden overflow so backspace reaches the visible typo', () => {
  assert.equal(limitPracticeInput('abxc', 'abc'), 'abx');
  assert.equal(limitPracticeInput('中文𠮷后', '中文𠮷'), '中文𠮷');
@@ -92,4 +92,66 @@ test('chapter summary adds the words practiced in that chapter', () => {
   assert.equal(summary.cpm, 200);
   assert.equal(summary.milliseconds, 3000);
   assert.deepEqual(summarizeChapter([]), { words: 0, accuracy: 100, cpm: 0, milliseconds: 0 });
+});
+
+test('chapter length regroups numbered chapters and keeps the cursor', () => {
+  const original = previewSnapshot('word', 'preview:cet4', 25).target;
+  setPreviewLayout(10, 'book');
+  try {
+    const snapshot = previewSnapshot('word', 'preview:cet4', 25);
+    assert.equal(snapshot.itemIndex, 26);
+    assert.equal(snapshot.chapterIndex, 3);
+    assert.equal(snapshot.chapterItemIndex, 6);
+    assert.equal(snapshot.chapterItemCount, 10);
+    assert.equal(snapshot.target, original);
+    const selected = previewSelectChapter(snapshot, 1);
+    assert.equal(selected.itemIndex, 11);
+    assert.equal(previewCatalog('word').wordBooks[0].chapterCount, Math.ceil(2607 / 10));
+    setPreviewLayout(5000, 'book');
+    const whole = previewSnapshot('word', 'preview:cet4', 25);
+    assert.equal(whole.chapterCount, 1);
+    assert.equal(whole.chapterItemCount, 2607);
+    assert.equal(whole.itemIndex, 26);
+    setPreviewLayout(5, 'book');
+    assert.equal(previewSnapshot('word', 'preview:cet4', 0).chapterItemCount, 10);
+  } finally {
+    setPreviewLayout(20, 'book');
+  }
+});
+
+test('random order shuffles the current chapter without moving the cursor', () => {
+  setPreviewLayout(20, 'book');
+  const book = Array.from({ length: 20 }, (_, index) => previewSnapshot('word', 'preview:cet4', index).target);
+  setPreviewLayout(20, 'random');
+  try {
+    const shuffled = Array.from({ length: 20 }, (_, index) => {
+      const item = previewSnapshot('word', 'preview:cet4', index);
+      assert.equal(item.itemIndex, index + 1);
+      assert.equal(item.chapterIndex, 1);
+      return item.target;
+    });
+    assert.deepEqual([...shuffled].sort(), [...book].sort());
+    assert.notDeepEqual(shuffled, book);
+    const next = previewSelectChapter(previewSnapshot('word', 'preview:cet4', 4), 1);
+    assert.equal(next.itemIndex, 21);
+    assert.deepEqual(chapterOffsets('builtin:cet4_3', 0, 8), [7, 0, 3, 6, 2, 5, 4, 1]);
+  } finally {
+    setPreviewLayout(20, 'book');
+  }
+});
+
+test('movie chapters keep their boundaries when the chapter length changes', () => {
+  setPreviewLayout(10, 'random');
+  try {
+    const first = previewSnapshot();
+    assert.equal(first.chapterCount, 8);
+    assert.equal(first.chapterItemCount, 11);
+    assert.equal(first.chapterTitle, '乱世佳人');
+    assert.equal(first.itemIndex, 1);
+    const next = previewSelectChapter(first, 1);
+    assert.equal(next.itemIndex, 12);
+    assert.equal(next.chapterTitle, '怦然心动');
+  } finally {
+    setPreviewLayout(20, 'book');
+  }
 });

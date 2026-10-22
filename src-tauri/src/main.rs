@@ -7,7 +7,8 @@ use std::sync::Mutex;
 use tauri::{Manager, State};
 use typelet_typing::{
     parse_article, parse_word_book, ContentCatalog, ContentCatalogSnapshot, ContentError,
-    ImportReport, PracticeMode, PracticeSession, PracticeSnapshot, StoredContentState,
+    ImportReport, PracticeMode, PracticeOrder, PracticeSession, PracticeSnapshot,
+    StoredContentState,
 };
 
 mod agents;
@@ -89,7 +90,7 @@ fn content_snapshot(state: &AppState) -> Result<ContentCatalogSnapshot, String> 
         .session
         .lock()
         .map_err(|_| "练习状态锁定失败".to_owned())?;
-    Ok(catalog.snapshot_with_positions(session.positions()))
+    Ok(catalog.snapshot_with_positions(session.positions(), session.chapter_length()))
 }
 
 #[tauri::command]
@@ -193,6 +194,30 @@ fn select_word_chapter(
 #[tauri::command]
 fn get_content_catalog(state: State<'_, AppState>) -> Result<ContentCatalogSnapshot, String> {
     content_snapshot(&state)
+}
+
+#[tauri::command]
+fn set_practice_layout(
+    state: State<'_, AppState>,
+    chapter_length: usize,
+    order: PracticeOrder,
+) -> Result<CatalogUpdate, String> {
+    let catalog = state
+        .content
+        .lock()
+        .map_err(|_| "内容状态锁定失败".to_owned())?;
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "练习状态锁定失败".to_owned())?;
+    let snapshot = session
+        .set_layout(&catalog, chapter_length, order)
+        .map_err(command_error)?;
+    let listed = catalog.snapshot_with_positions(session.positions(), session.chapter_length());
+    Ok(CatalogUpdate {
+        catalog: listed,
+        snapshot,
+    })
 }
 
 #[tauri::command]
@@ -435,6 +460,7 @@ fn main() {
             select_practice_item,
             select_word_chapter,
             get_content_catalog,
+            set_practice_layout,
             select_practice_mode,
             select_article,
             select_word_book,
