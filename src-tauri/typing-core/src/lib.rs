@@ -6,7 +6,7 @@
 
 #![deny(missing_docs)]
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::OnceLock;
@@ -122,6 +122,8 @@ pub struct CollectionSummary {
     pub source: String,
     /// Number of chapters in the collection.
     pub chapter_count: usize,
+    /// Percentage of items already passed in this collection, from 0 to 100.
+    pub progress: u32,
     /// Whether the user can remove this collection. Built-in collections cannot be removed.
     pub removable: bool,
 }
@@ -207,6 +209,9 @@ pub struct StoredContentState {
     /// Zero-based word position for the selected word book.
     #[serde(default)]
     pub word_index: usize,
+    /// Zero-based resume position for every collection, keyed by collection id.
+    #[serde(default)]
+    pub positions: BTreeMap<String, usize>,
 }
 
 /// A successful article or word book import preview.
@@ -549,28 +554,38 @@ impl ContentCatalog {
             word_book_id: Some(self.word_book_id.clone()),
             sentence_index: 0,
             word_index: 0,
+            positions: BTreeMap::new(),
         }
     }
 
     /// Return a compact selector snapshot.
     pub fn snapshot(&self) -> ContentCatalogSnapshot {
+        self.snapshot_with_positions(&BTreeMap::new())
+    }
+
+    /// Return a selector snapshot with saved progress for each collection.
+    pub fn snapshot_with_positions(
+        &self,
+        positions: &BTreeMap<String, usize>,
+    ) -> ContentCatalogSnapshot {
         let articles = self
             .builtin_articles
             .iter()
-            .map(|article| self.article_summary(article, false))
+            .map(|article| self.article_summary(article, false, positions))
             .chain(
                 self.articles
                     .iter()
-                    .map(|article| self.article_summary(article, true)),
+                    .map(|article| self.article_summary(article, true, positions)),
             )
             .collect();
-        let word_books = std::iter::once(self.word_book_summary(&self.builtin_word_book, false))
-            .chain(
-                self.word_books
-                    .iter()
-                    .map(|book| self.word_book_summary(book, true)),
-            )
-            .collect();
+        let word_books =
+            std::iter::once(self.word_book_summary(&self.builtin_word_book, false, positions))
+                .chain(
+                    self.word_books
+                        .iter()
+                        .map(|book| self.word_book_summary(book, true, positions)),
+                )
+                .collect();
         ContentCatalogSnapshot {
             mode: self.mode,
             articles,
@@ -654,7 +669,12 @@ impl ContentCatalog {
         Ok(())
     }
 
-    fn article_summary(&self, article: &Article, removable: bool) -> CollectionSummary {
+    fn article_summary(
+        &self,
+        article: &Article,
+        removable: bool,
+        positions: &BTreeMap<String, usize>,
+    ) -> CollectionSummary {
         CollectionSummary {
             id: article.id.clone(),
             title: article.title.clone(),
@@ -662,11 +682,20 @@ impl ContentCatalog {
             selected: self.article_id == article.id,
             source: article.source.clone(),
             chapter_count: article_chapter_count(article),
+            progress: progress_percent(
+                positions.get(&article.id).copied().unwrap_or(0),
+                article.sentences.len(),
+            ),
             removable,
         }
     }
 
-    fn word_book_summary(&self, book: &WordBook, removable: bool) -> CollectionSummary {
+    fn word_book_summary(
+        &self,
+        book: &WordBook,
+        removable: bool,
+        positions: &BTreeMap<String, usize>,
+    ) -> CollectionSummary {
         CollectionSummary {
             id: book.id.clone(),
             title: book.title.clone(),
@@ -674,6 +703,10 @@ impl ContentCatalog {
             selected: self.word_book_id == book.id,
             source: book.source.clone(),
             chapter_count: chapter_count(book.words.len()),
+            progress: progress_percent(
+                positions.get(&book.id).copied().unwrap_or(0),
+                book.words.len(),
+            ),
             removable,
         }
     }
@@ -832,6 +865,7 @@ pub struct PracticeSession {
     item_index: usize,
     sentence_index: usize,
     word_index: usize,
+    positions: BTreeMap<String, usize>,
     practice: Practice,
 }
 
@@ -846,6 +880,7 @@ impl PracticeSession {
             item_index: 0,
             sentence_index: 0,
             word_index: 0,
+            positions: BTreeMap::new(),
             practice: Practice::default(),
         })
     }
@@ -856,7 +891,23 @@ impl PracticeSession {
         sentence_index: usize,
         word_index: usize,
     ) -> Result<Self, ContentError> {
+        Self::with_positions(catalog, sentence_index, word_index, BTreeMap::new())
+    }
+
+    /// Resume saved positions for every collection.
+    ///
+    /// The sentence and word indexes belong to the catalog's selected article and word book.
+    /// Indexes for other collections come from positions.
+    pub fn with_positions(
+        catalog: &ContentCatalog,
+        sentence_index: usize,
+        word_index: usize,
+        mut positions: BTreeMap<String, usize>,
+    ) -> Result<Self, ContentError> {
         let mut session = Self::new(catalog)?;
+        positions.insert(catalog.article_id.clone(), sentence_index);
+        positions.insert(catalog.word_book_id.clone(), word_index);
+        session.positions = positions;
         session.sentence_index = sentence_index;
         session.word_index = word_index;
         session.item_index = match catalog.mode() {
@@ -865,6 +916,11 @@ impl PracticeSession {
         };
         session.sync_selection(catalog)?;
         Ok(session)
+    }
+
+    /// Saved resume position for every collection this session has opened.
+    pub fn positions(&self) -> &BTreeMap<String, usize> {
+        &self.positions
     }
 
     /// Positions that should be written with the content state.
@@ -954,20 +1010,16 @@ impl PracticeSession {
     fn sync_selection(&mut self, catalog: &ContentCatalog) -> Result<(), ContentError> {
         let mode = catalog.mode();
         let collection_id = catalog.selected_collection_id().to_owned();
-        if self.mode != mode {
+        if self.mode != mode || self.collection_id != collection_id {
             self.remember_position();
             self.mode = mode;
             self.collection_id = collection_id;
-            self.item_index = match mode {
-                PracticeMode::Sentence => self.sentence_index,
-                PracticeMode::Word => self.word_index,
-            };
+            self.item_index = self
+                .positions
+                .get(&self.collection_id)
+                .copied()
+                .unwrap_or(0);
             self.practice = Practice::default();
-        } else if self.collection_id != collection_id {
-            self.collection_id = collection_id;
-            self.item_index = 0;
-            self.practice = Practice::default();
-            self.remember_position();
         }
         let count = catalog.item_count(self.mode, &self.collection_id)?;
         if count == 0 {
@@ -982,6 +1034,10 @@ impl PracticeSession {
     }
 
     fn remember_position(&mut self) {
+        if !self.collection_id.is_empty() {
+            self.positions
+                .insert(self.collection_id.clone(), self.item_index);
+        }
         match self.mode {
             PracticeMode::Sentence => self.sentence_index = self.item_index,
             PracticeMode::Word => self.word_index = self.item_index,
@@ -1033,6 +1089,16 @@ impl PracticeSession {
 
 fn chapter_count(item_count: usize) -> usize {
     item_count.div_ceil(CHAPTER_LENGTH).max(1)
+}
+
+/// Percentage of a collection already passed. The index is the next item to practice.
+fn progress_percent(index: usize, count: usize) -> u32 {
+    if count == 0 || index == 0 {
+        return 0;
+    }
+    let index = index.min(count);
+    let percent = (index as u64 * 100 + count as u64 / 2) / count as u64;
+    percent.clamp(1, 100) as u32
 }
 
 fn attempt_reaches_end(practice: &Practice, target: &str) -> bool {
@@ -1480,6 +1546,96 @@ mod tests {
             .expect("sentence position restores");
         assert_eq!(sentence.item_index, 2);
         assert_eq!(session.stored_indexes(), (1, 20));
+    }
+
+    #[test]
+    fn switching_word_books_restores_each_position_and_reports_progress() {
+        let mut catalog = ContentCatalog::new().expect("embedded content is valid");
+        catalog.set_mode(PracticeMode::Word);
+        catalog.add_word_book(WordBook {
+            id: "import:sample".to_owned(),
+            title: "导入".to_owned(),
+            source: "test".to_owned(),
+            words: (0..40)
+                .map(|index| WordEntry {
+                    name: format!("word{index}"),
+                    trans: vec!["词".to_owned()],
+                    usphone: String::new(),
+                    ukphone: String::new(),
+                })
+                .collect(),
+        });
+        let mut session = PracticeSession::new(&catalog).expect("imported book can be practiced");
+        catalog
+            .select_word_book("builtin:cet4_3")
+            .expect("cet4 can be selected");
+        let cet4 = session
+            .select_item(&catalog, 20)
+            .expect("cet4 word can be selected");
+        assert_eq!(cet4.item_index, 21);
+
+        catalog
+            .select_word_book("import:sample")
+            .expect("sample can be selected");
+        let sample = session
+            .snapshot(&catalog, 0)
+            .expect("sample starts at the beginning");
+        assert_eq!(sample.collection_id, "import:sample");
+        assert_eq!(sample.item_index, 1);
+        session
+            .select_item(&catalog, 5)
+            .expect("sample word can be selected");
+
+        catalog
+            .select_word_book("builtin:cet4_3")
+            .expect("cet4 can be selected again");
+        let restored = session
+            .snapshot(&catalog, 0)
+            .expect("cet4 position restores");
+        assert_eq!(restored.item_index, 21);
+
+        catalog
+            .select_word_book("import:sample")
+            .expect("sample can be selected again");
+        let sample_again = session
+            .snapshot(&catalog, 0)
+            .expect("sample position restores");
+        assert_eq!(sample_again.item_index, 6);
+
+        let listed = catalog.snapshot_with_positions(session.positions());
+        let cet4_progress = listed
+            .word_books
+            .iter()
+            .find(|book| book.id == "builtin:cet4_3")
+            .map(|book| book.progress);
+        let sample_progress = listed
+            .word_books
+            .iter()
+            .find(|book| book.id == "import:sample")
+            .map(|book| book.progress);
+        assert_eq!(cet4_progress, Some(progress_percent(20, 2607)));
+        assert_eq!(sample_progress, Some(13));
+
+        let (sentence_index, word_index) = session.stored_indexes();
+        let mut resumed = PracticeSession::with_positions(
+            &catalog,
+            sentence_index,
+            word_index,
+            session.positions().clone(),
+        )
+        .expect("saved positions can be restored");
+        let resumed_snapshot = resumed
+            .snapshot(&catalog, 0)
+            .expect("sample is still selected");
+        assert_eq!(resumed_snapshot.collection_id, "import:sample");
+        assert_eq!(resumed_snapshot.item_index, 6);
+        catalog
+            .select_word_book("builtin:cet4_3")
+            .expect("cet4 can be selected after restore");
+        let resumed_cet4 = resumed
+            .snapshot(&catalog, 0)
+            .expect("cet4 restores from the map");
+        assert_eq!(resumed_cet4.item_index, 21);
     }
 
     #[test]

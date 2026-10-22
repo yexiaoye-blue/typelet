@@ -4,7 +4,7 @@ import movieLines from '../../src-tauri/typing-core/data/movie_lines.json';
 export type Practice = { text: string; attempts: number; correctAttempts: number };
 export type PracticeMode = 'sentence' | 'word';
 export type WordEntry = { name: string; trans: string[]; usphone: string; ukphone: string };
-export type CollectionSummary = { id: string; title: string; count: number; selected: boolean; source: string; chapterCount: number; removable: boolean };
+export type CollectionSummary = { id: string; title: string; count: number; selected: boolean; source: string; chapterCount: number; progress: number; removable: boolean };
 export type ContentCatalogSnapshot = { mode: PracticeMode; articles: CollectionSummary[]; wordBooks: CollectionSummary[] };
 export type PracticeSnapshot = {
   mode: PracticeMode;
@@ -151,8 +151,8 @@ export function previewCatalog(mode: PracticeMode = 'sentence', articleId = prev
   const selectedArticle = previewArticles.some((article) => article.id === articleId) ? articleId : previewArticles[0].id;
   return {
     mode,
-    articles: previewArticles.map(article => ({ id: article.id, title: article.title, count: article.sentences.length, selected: article.id === selectedArticle, source: article.source, chapterCount: articleChapterCount(article), removable: false })),
-    wordBooks: [{ id: wordBookId, title: 'CET4_3 · preview', count: previewWords.length, selected: true, source: 'Web preview data', chapterCount: Math.ceil(previewWords.length / 20), removable: false }],
+    articles: previewArticles.map(article => ({ id: article.id, title: article.title, count: article.sentences.length, selected: article.id === selectedArticle, source: article.source, chapterCount: articleChapterCount(article), progress: 0, removable: false })),
+    wordBooks: [{ id: wordBookId, title: 'CET4_3 · preview', count: previewWords.length, selected: true, source: 'Web preview data', chapterCount: Math.ceil(previewWords.length / 20), progress: 0, removable: false }],
   };
 }
 
