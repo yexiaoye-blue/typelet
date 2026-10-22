@@ -24,9 +24,9 @@
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
   import { version as packagedVersion } from '../package.json';
-  import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
+  import { bundledFont, fontChoices, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
   import { ScrollMemory } from './scroll-memory';
-  import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, traceKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
+  import { keySoundPacks, keysAudible, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, readingAudible, traceKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
   import SettingsSelect, { type SettingsSelectOption } from './components/SettingsSelect.svelte';
 
   type Locale = 'zh' | 'en';
@@ -79,7 +79,11 @@
   let resizeObserver: ResizeObserver | undefined;
   let observedDisplay: HTMLDivElement | undefined;
   let fontPreference = $state(loadFontPreference());
-  let fontSearch = $state('');
+  let fontDraft = $state(loadFontPreference());
+  let fontQuery = $state('');
+  let fontMenuOpen = $state(false);
+  let fontHighlight = $state(-1);
+  let fontField = $state<HTMLDivElement>();
   let systemFonts = $state<string[]>([]);
   let fontsLoading = $state(false);
   let fontsLoaded = $state(false);
@@ -143,19 +147,16 @@
       : t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterComplete);
   let chapterResultUnit = $derived(snapshot.mode === 'sentence' ? t.chapterSentences : t.chapterWords);
   let typed = $derived(characters(committedDraft));
-  let filteredFonts = $derived(systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase())));
   const keySoundOptions: SettingsSelectOption[] = keySoundPacks.map(pack => ({ value: pack.id, label: pack.id }));
-  let fontOptions = $derived.by((): SettingsSelectOption[] => {
-    const options: SettingsSelectOption[] = [
-      { value: bundledFont, label: 'Noto Sans Mono · ' + t.builtIn },
-      { value: 'system', label: t.systemFont },
-    ];
-    if (fontPreference.startsWith('font:') && !filteredFonts.includes(fontPreference.slice(5))) {
-      options.push({ value: fontPreference, label: fontPreference.slice(5) });
-    }
-    options.push(...filteredFonts.map(family => ({ value: 'font:' + family, label: family, group: t.systemFonts })));
-    return options;
-  });
+  let fontChoiceList = $derived(fontChoices({
+    families: systemFonts,
+    query: fontMenuOpen ? fontQuery : '',
+    draft: fontDraft,
+    builtinLabel: 'Noto Sans Mono · ' + t.builtIn,
+    systemLabel: t.systemFont,
+  }));
+  let fontPreview = $derived(fontMenuOpen && fontChoiceList[fontHighlight] ? fontChoiceList[fontHighlight].value : fontDraft);
+  let fontMenuMaxHeight = $state(168);
   let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
   let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
   let itemReachedEnd = $derived(snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length);
@@ -403,34 +404,46 @@
   function rememberSound(next: SoundPreference) {
     sound = next;
     persistSoundPreference(next);
+    if (!readingAudible(sound)) {
+      stopPronunciation();
+      return;
+    }
     if (activeAudio) activeAudio.volume = speechLevel();
   }
 
   let keyPreviewAt = 0;
   function previewKeySound(force = false) {
-    if (!sound.keyEnabled || sound.keyVolume <= 0) return;
+    if (!keysAudible(sound)) return;
     const now = performance.now();
     if (!force && now - keyPreviewAt < 80) return;
     keyPreviewAt = now;
     playKeySound(sound.pack, sound.keyVolume);
   }
 
+  function setSoundEnabled(enabled: boolean) {
+    rememberSound({ ...sound, enabled });
+    if (enabled) previewKeySound(true);
+  }
+
+  function setSpeechMuted(muted: boolean) {
+    rememberSound({ ...sound, speechMuted: muted });
+  }
+
   function setSpeechVolume(event: Event) {
     const speechVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
     if (!Number.isFinite(speechVolume)) return;
-    rememberSound({ ...sound, speechVolume: Math.max(0, Math.min(100, speechVolume)) });
-    if (sound.speechVolume <= 0) stopPronunciation();
+    rememberSound({ ...sound, speechMuted: false, speechVolume: Math.max(0, Math.min(100, speechVolume)) });
   }
 
-  function setKeyEnabled(enabled: boolean) {
-    rememberSound({ ...sound, keyEnabled: enabled });
-    if (enabled) previewKeySound(true);
+  function setKeyMuted(muted: boolean) {
+    rememberSound({ ...sound, keyMuted: muted });
+    if (!muted) previewKeySound(true);
   }
 
   function setKeyVolume(event: Event) {
     const keyVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
     if (!Number.isFinite(keyVolume)) return;
-    rememberSound({ ...sound, keyVolume: Math.max(0, Math.min(100, keyVolume)) });
+    rememberSound({ ...sound, keyMuted: false, keyVolume: Math.max(0, Math.min(100, keyVolume)) });
     previewKeySound();
   }
 
@@ -441,7 +454,7 @@
   }
 
   function playPracticeKey(previous: string, next: string, occurredAt: number) {
-    if (!sound.keyEnabled || sound.keyVolume <= 0 || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
+    if (!keysAudible(sound) || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
     if (next.length <= previous.length || !next.startsWith(previous)) return;
     const lag = Math.round(keyEventLag(occurredAt));
     const added = next.length - previous.length;
@@ -463,9 +476,91 @@
   }
 
 
-  function selectFont(value: string) {
-    fontPreference = value;
-    persistFontPreference(value);
+  function fontLabel(value: string) {
+    if (value === bundledFont) return 'Noto Sans Mono · ' + t.builtIn;
+    if (value === 'system') return t.systemFont;
+    return value.startsWith('font:') ? value.slice(5) : value;
+  }
+
+  function openFontMenu() {
+    placeFontMenu();
+    fontMenuOpen = true;
+    fontHighlight = Math.max(0, fontChoiceList.findIndex(choice => choice.value === fontDraft));
+  }
+
+  function placeFontMenu() {
+    const field = fontField?.querySelector('.font-field');
+    const page = fontField?.closest('.settings-page');
+    if (!(field instanceof HTMLElement) || !(page instanceof HTMLElement)) return;
+    const minimum = 148;
+    const fieldBox = field.getBoundingClientRect();
+    const pageBox = page.getBoundingClientRect();
+    let room = pageBox.bottom - fieldBox.bottom - 10;
+    if (room < minimum) {
+      page.scrollTop += minimum - room;
+      room = page.getBoundingClientRect().bottom - field.getBoundingClientRect().bottom - 10;
+    }
+    fontMenuMaxHeight = Math.max(96, Math.min(200, Math.floor(room)));
+  }
+
+  function closeFontMenu() {
+    fontMenuOpen = false;
+    fontQuery = '';
+    fontHighlight = -1;
+  }
+
+  function chooseFont(value: string) {
+    fontDraft = value;
+    closeFontMenu();
+  }
+
+  function applyFont() {
+    if (fontDraft === fontPreference) return;
+    fontPreference = fontDraft;
+    persistFontPreference(fontDraft);
+  }
+
+  function onFontFocusOut(event: FocusEvent) {
+    const next = event.relatedTarget;
+    if (next instanceof Node && fontField?.contains(next)) return;
+    closeFontMenu();
+  }
+
+  function onFontInput(event: Event) {
+    fontQuery = (event.currentTarget as HTMLInputElement).value;
+    fontMenuOpen = true;
+    fontHighlight = 0;
+  }
+
+  async function moveFontHighlight(next: number) {
+    fontHighlight = next;
+    await tick();
+    const menu = fontField?.querySelector<HTMLElement>('.font-menu');
+    const option = menu?.querySelectorAll<HTMLButtonElement>('button')[next];
+    if (!menu || !option) return;
+    const top = option.offsetTop;
+    const bottom = top + option.offsetHeight;
+    if (top < menu.scrollTop) menu.scrollTop = top;
+    else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
+  }
+
+  function onFontKeydown(event: KeyboardEvent) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (!fontMenuOpen) {
+        openFontMenu();
+        return;
+      }
+      void moveFontHighlight(Math.min(fontChoiceList.length - 1, fontHighlight + 1));
+    } else if (event.key === 'ArrowUp' && fontMenuOpen) {
+      event.preventDefault();
+      void moveFontHighlight(Math.max(0, fontHighlight - 1));
+    } else if (event.key === 'Enter' && fontMenuOpen && fontChoiceList[fontHighlight]) {
+      event.preventDefault();
+      chooseFont(fontChoiceList[fontHighlight].value);
+    } else if (event.key === 'Escape') {
+      closeFontMenu();
+    }
   }
 
   function previewAgents(): AgentSummary[] {
@@ -793,7 +888,7 @@
   }
 
   function startSpokenWord(name: string | undefined, key: string, force = false) {
-    if (!name) return;
+    if (!name || !readingAudible(sound)) return;
     if (!force && spokenKey === key && spokenState !== 'idle') return;
     spokenKey = key;
     spokenState = 'pending';
@@ -829,11 +924,8 @@
   }
 
   async function playPronunciation(name: string | undefined): Promise<{ generation: number; started: boolean }> {
-    if (!name) return { generation: pronunciationGeneration, started: false };
-    if (sound.speechVolume <= 0) {
-      stopPronunciation();
-      return { generation: pronunciationGeneration, started: false };
-    }
+    // Checked before constructing the audio element so a mute does not request the pronunciation.
+    if (!name || !readingAudible(sound)) return { generation: pronunciationGeneration, started: false };
     const generation = ++pronunciationGeneration;
     const finishPrevious = finishPronunciation;
     finishPronunciation = undefined;
@@ -1496,29 +1588,43 @@
 
 
       <section class="settings-group" aria-label={t.soundSettings}>
-        <div class="settings-copy"><strong>{t.soundSettings}</strong><span>{t.soundSettingsHint}</span></div>
-        <div class="setting-block">
-          <label class="volume-control" style:--volume={sound.speechVolume + '%'}>
-            <span>{t.speechVolume}</span>
-            <input type="range" min="0" max="100" step="1" value={sound.speechVolume} oninput={setSpeechVolume} />
+        <div class="setting-row sound-header">
+          <div class="settings-copy"><strong>{t.soundSettings}</strong><span>{t.soundSettingsHint}</span></div>
+          <button type="button" class="agent-switch" class:on={sound.enabled} role="switch" aria-checked={sound.enabled} aria-label={t.soundSettings} onclick={() => setSoundEnabled(!sound.enabled)}><span></span></button>
+        </div>
+        <div class="setting-block" class:is-disabled={!sound.enabled}>
+          <div class="volume-control" class:is-muted={sound.speechMuted} style:--volume={sound.speechVolume + '%'}>
+            <span id="reading-volume">{t.speechVolume}</span>
+            <button type="button" class="speaker speaker-inline mute-button" class:is-muted={sound.speechMuted} aria-pressed={sound.speechMuted} aria-label={sound.speechMuted ? t.unmuteReading : t.muteReading} disabled={!sound.enabled} onclick={() => setSpeechMuted(!sound.speechMuted)}>
+              {#if sound.speechMuted}
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.5 21 14.5M21 9.5 16 14.5" /></svg>
+              {:else}
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
+              {/if}
+            </button>
+            <input type="range" min="0" max="100" step="1" value={sound.speechVolume} aria-labelledby="reading-volume" disabled={!sound.enabled} oninput={setSpeechVolume} />
             <span class="volume-value">{sound.speechVolume}%</span>
-          </label>
+          </div>
         </div>
-        <div class="setting-row">
-          <div class="settings-copy"><strong>{t.keySound}</strong><span>{t.keySoundHint}</span></div>
-          <button type="button" class="agent-switch" class:on={sound.keyEnabled} role="switch" aria-checked={sound.keyEnabled} aria-label={t.keySound} onclick={() => setKeyEnabled(!sound.keyEnabled)}><span></span></button>
-        </div>
-        <div class="setting-block" class:is-disabled={!sound.keyEnabled}>
-          <label class="volume-control" style:--volume={sound.keyVolume + '%'}>
-            <span>{t.keyVolume}</span>
-            <input type="range" min="0" max="100" step="1" value={sound.keyVolume} disabled={!sound.keyEnabled} oninput={setKeyVolume} />
+        <div class="setting-block" class:is-disabled={!sound.enabled}>
+          <div class="volume-control" class:is-muted={sound.keyMuted} style:--volume={sound.keyVolume + '%'}>
+            <span id="key-volume">{t.keySound}</span>
+            <button type="button" class="speaker speaker-inline mute-button" class:is-muted={sound.keyMuted} aria-pressed={sound.keyMuted} aria-label={sound.keyMuted ? t.unmuteKeySound : t.muteKeySound} disabled={!sound.enabled} onclick={() => setKeyMuted(!sound.keyMuted)}>
+              {#if sound.keyMuted}
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.5 21 14.5M21 9.5 16 14.5" /></svg>
+              {:else}
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
+              {/if}
+            </button>
+            <input type="range" min="0" max="100" step="1" value={sound.keyVolume} aria-labelledby="key-volume" disabled={!sound.enabled} oninput={setKeyVolume} />
             <span class="volume-value">{sound.keyVolume}%</span>
-          </label>
+          </div>
+          <p class="sound-note">{t.keySoundHint}</p>
           <div class="pack-control">
             <span>{t.keySoundPack}</span>
             <div class="sound-picker-row">
-              <SettingsSelect value={sound.pack} options={keySoundOptions} ariaLabel={t.keySoundPack} disabled={!sound.keyEnabled} onSelect={setKeyPack} />
-              <button type="button" class="speaker sound-preview-button" aria-label={t.previewKeySound} title={t.previewKeySound} disabled={!sound.keyEnabled || sound.keyVolume <= 0} onclick={() => previewKeySound(true)}>
+              <SettingsSelect value={sound.pack} options={keySoundOptions} ariaLabel={t.keySoundPack} disabled={!sound.enabled} onSelect={setKeyPack} />
+              <button type="button" class="speaker sound-preview-button" aria-label={t.previewKeySound} title={t.previewKeySound} disabled={!keysAudible(sound)} onclick={() => previewKeySound(true)}>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
               </button>
             </div>
@@ -1540,10 +1646,37 @@
         </section>
 
       <section class="settings-group font-settings" aria-label={t.font}>
-        <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
-        <input class="font-search" type="search" aria-label={t.fontSearch} placeholder={t.fontSearch} bind:value={fontSearch} />
-        <SettingsSelect value={fontPreference} options={fontOptions} ariaLabel={t.font} onSelect={selectFont} />
-        <div class="font-sample" aria-label={t.fontSample}>Aa Bb 123 · 中文</div>
+        <div class="font-heading">
+          <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
+          <button type="button" class="font-apply" disabled={fontDraft === fontPreference} onclick={applyFont}>{t.applyFont}</button>
+        </div>
+        <div class="font-sample" aria-label={t.fontSample} style:font-family={fontStack(fontPreview)}>Aa Bb 123 · 中文</div>
+        <div class="font-combobox" bind:this={fontField} onfocusout={onFontFocusOut}>
+          <div class="font-field">
+            <input
+              role="combobox"
+              aria-label={t.fontSearch}
+              aria-expanded={fontMenuOpen}
+              aria-controls="font-menu"
+              aria-autocomplete="list"
+              placeholder={fontMenuOpen ? fontLabel(fontDraft) : t.fontSearch}
+              value={fontMenuOpen ? fontQuery : fontLabel(fontDraft)}
+              onfocus={openFontMenu}
+              oninput={onFontInput}
+              onkeydown={onFontKeydown}
+            />
+            <button type="button" class="font-disclosure" aria-label={t.font} aria-expanded={fontMenuOpen} onclick={() => fontMenuOpen ? closeFontMenu() : openFontMenu()}>{fontMenuOpen ? '⌃' : '⌄'}</button>
+          </div>
+          {#if fontMenuOpen}
+            <div id="font-menu" class="font-menu" role="listbox" aria-label={t.font} style:max-height={fontMenuMaxHeight + 'px'}>
+              {#each fontChoiceList as choice, index (choice.value)}
+                <button type="button" role="option" aria-selected={choice.value === fontDraft} class:active={index === fontHighlight} onmouseenter={() => fontHighlight = index} onclick={() => chooseFont(choice.value)}>{choice.label}</button>
+              {:else}
+                <p class="font-empty">{t.fontEmpty}</p>
+              {/each}
+            </div>
+          {/if}
+        </div>
         <div class="font-list-status">
           <span role="status">{fontsLoading ? t.fontLoading : fontsFailed ? t.fontError : `${t.fontCount}: ${systemFonts.length}`}</span>
           <button disabled={fontsLoading} onclick={loadFonts}>{t.refresh}</button>

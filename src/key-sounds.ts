@@ -25,15 +25,17 @@ export const keySoundPacks: KeySoundPack[] = [
 ];
 
 export type SoundPreference = {
+  enabled: boolean;
+  speechMuted: boolean;
   speechVolume: number;
-  keyEnabled: boolean;
+  keyMuted: boolean;
   keyVolume: number;
   pack: string;
 };
 
 const storageKey = 'typelet.sound';
 const packIds = new Set(keySoundPacks.map(pack => pack.id));
-const defaultPreference: SoundPreference = { speechVolume: 100, keyEnabled: true, keyVolume: 100, pack: 'Default' };
+const defaultPreference: SoundPreference = { enabled: true, speechMuted: false, speechVolume: 100, keyMuted: false, keyVolume: 100, pack: 'Default' };
 
 function clampPercent(value: unknown, fallback: number) {
   const number = typeof value === 'number' ? value : Number(value);
@@ -41,19 +43,36 @@ function clampPercent(value: unknown, fallback: number) {
   return Math.max(0, Math.min(100, Math.round(number)));
 }
 
+type StoredSound = Partial<SoundPreference> & { keyEnabled?: boolean };
+
+export function soundPreferenceFrom(value: unknown): SoundPreference {
+  const parsed = value && typeof value === 'object' ? value as StoredSound : {};
+  const pack = typeof parsed.pack === 'string' && packIds.has(parsed.pack) ? parsed.pack : defaultPreference.pack;
+  const keyMuted = typeof parsed.keyMuted === 'boolean' ? parsed.keyMuted : parsed.keyEnabled === false;
+  return {
+    enabled: parsed.enabled !== false,
+    speechMuted: parsed.speechMuted === true,
+    speechVolume: clampPercent(parsed.speechVolume, defaultPreference.speechVolume),
+    keyMuted,
+    keyVolume: clampPercent(parsed.keyVolume, defaultPreference.keyVolume),
+    pack,
+  };
+}
+
 export function loadSoundPreference(): SoundPreference {
   try {
-    const parsed = JSON.parse(localStorage.getItem(storageKey) ?? '') as Partial<SoundPreference>;
-    const pack = typeof parsed.pack === 'string' && packIds.has(parsed.pack) ? parsed.pack : defaultPreference.pack;
-    return {
-      speechVolume: clampPercent(parsed.speechVolume, defaultPreference.speechVolume),
-      keyEnabled: parsed.keyEnabled !== false,
-      keyVolume: clampPercent(parsed.keyVolume, defaultPreference.keyVolume),
-      pack,
-    };
+    return soundPreferenceFrom(JSON.parse(localStorage.getItem(storageKey) ?? ''));
   } catch {
     return { ...defaultPreference };
   }
+}
+
+export function readingAudible(sound: SoundPreference) {
+  return sound.enabled && !sound.speechMuted && sound.speechVolume > 0;
+}
+
+export function keysAudible(sound: SoundPreference) {
+  return sound.enabled && !sound.keyMuted && sound.keyVolume > 0;
 }
 
 export function persistSoundPreference(value: SoundPreference) {
