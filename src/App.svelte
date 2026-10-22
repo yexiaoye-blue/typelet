@@ -419,15 +419,34 @@
   }
 
   function commitChapterLength(input: HTMLInputElement) {
-    const parsed = Number(input.value);
+    const parsed = Number(input.value.trim());
     if (!Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
       input.value = String(effectiveChapterLength);
       return;
     }
     const next = Math.min(chapterLengthMax, Math.max(chapterLengthMin, parsed));
     input.value = String(next);
-    if (next === chapterLength) return;
+    if (next === effectiveChapterLength && next === chapterLength) return;
     void applyPracticeLayout(next, practiceOrder);
+  }
+
+  function stepChapterLength(direction: -1 | 1) {
+    if (chapterLengthMin === chapterLengthMax) return;
+    const next = Math.min(chapterLengthMax, Math.max(chapterLengthMin, effectiveChapterLength + direction));
+    if (next === effectiveChapterLength) return;
+    void applyPracticeLayout(next, practiceOrder);
+  }
+
+  function onChapterLengthKeydown(event: KeyboardEvent) {
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      stepChapterLength(event.key === 'ArrowUp' ? 1 : -1);
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const input = event.currentTarget;
+    if (input instanceof HTMLInputElement) commitChapterLength(input);
   }
 
   function choosePracticeOrder(order: PracticeOrder) {
@@ -1655,11 +1674,15 @@
           <button class:selected={snapshot.mode === 'word'} aria-pressed={snapshot.mode === 'word'} onclick={() => changeMode('word')}>{t.wordMode}</button>
         </div>
         <div class="setting-block">
-          <div class="settings-copy"><strong>{t.chapterLength}</strong><span>{t.chapterLengthHint}</span></div>
-          <label class="chapter-length">
-            <input type="number" min={chapterLengthMin} max={chapterLengthMax} step="1" value={effectiveChapterLength} disabled={chapterLengthMin === chapterLengthMax} aria-label={t.chapterLength} onchange={(event) => commitChapterLength(event.currentTarget as HTMLInputElement)} />
-            <span>{chapterLengthMin}-{chapterLengthMax}</span>
-          </label>
+          <div class="settings-copy">
+            <strong>{t.chapterLength}</strong>
+            <span>{t.chapterLengthHint}<span class="chapter-length-bounds"> · {chapterLengthMin}–{chapterLengthMax}</span></span>
+          </div>
+          <div class="chapter-stepper" class:is-disabled={chapterLengthMin === chapterLengthMax} role="group" aria-label={t.chapterLength}>
+            <button type="button" aria-label={t.decreaseChapterLength} disabled={chapterLengthMin === chapterLengthMax || effectiveChapterLength <= chapterLengthMin} onclick={() => stepChapterLength(-1)}>−</button>
+            <input inputmode="numeric" autocomplete="off" spellcheck="false" value={effectiveChapterLength} disabled={chapterLengthMin === chapterLengthMax} aria-label={t.chapterLength} onchange={(event) => commitChapterLength(event.currentTarget as HTMLInputElement)} onkeydown={onChapterLengthKeydown} />
+            <button type="button" aria-label={t.increaseChapterLength} disabled={chapterLengthMin === chapterLengthMax || effectiveChapterLength >= chapterLengthMax} onclick={() => stepChapterLength(1)}>+</button>
+          </div>
         </div>
         <div class="setting-block">
           <div class="settings-copy"><strong>{t.practiceOrder}</strong><span>{t.practiceOrderHint}</span></div>
