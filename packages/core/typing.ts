@@ -120,14 +120,89 @@ function movieArticle(book: MovieLineBook) {
 const previewArticles = [movieArticle(movieLines as MovieLineBook)];
 const previewWords: WordEntry[] = cet4Data as WordEntry[];
 
-function articleChapterCount(article: { chapterEnds: number[] }) {
-  return article.chapterEnds.length || 1;
+export type PracticeOrder = 'book' | 'random';
+export const defaultChapterLength = 20;
+export const minimumChapterLength = 10;
+
+let requestedChapterLength = defaultChapterLength;
+let practiceOrder: PracticeOrder = 'book';
+
+export function setPreviewLayout(chapterLength: number, order: PracticeOrder) {
+  requestedChapterLength = normalizeRequestedChapterLength(chapterLength);
+  practiceOrder = order === 'random' ? 'random' : 'book';
+}
+
+export function normalizeRequestedChapterLength(value: number) {
+  if (!Number.isInteger(value) || value <= 0) return defaultChapterLength;
+  return Math.max(minimumChapterLength, value);
+}
+
+export function effectiveChapterLength(count: number, requested = requestedChapterLength) {
+  const normalized = normalizeRequestedChapterLength(requested);
+  if (count <= 0) return normalized;
+  const minimum = Math.min(minimumChapterLength, count);
+  return Math.min(count, Math.max(minimum, normalized));
+}
+
+function numberedChapterCount(count: number, requested = requestedChapterLength) {
+  if (count <= 0) return 1;
+  return Math.max(1, Math.ceil(count / effectiveChapterLength(count, requested)));
+}
+
+function hash32(id: string) {
+  const bytes = new TextEncoder().encode(id);
+  let hash = 2166136261;
+  for (const byte of bytes) {
+    hash ^= byte;
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function mix32(value: number) {
+  let state = value >>> 0;
+  state = (state ^ (state << 13)) >>> 0;
+  state = (state ^ (state >>> 17)) >>> 0;
+  state = (state ^ (state << 5)) >>> 0;
+  return state >>> 0;
+}
+
+export function chapterOffsets(collectionId: string, chapterStart: number, chapterLength: number) {
+  const offsets = Array.from({ length: chapterLength }, (_, index) => index);
+  if (chapterLength < 2) return offsets;
+  let state = (hash32(collectionId) ^ Math.imul(chapterStart, 0x9E3779B1) ^ Math.imul(chapterLength, 0x85EBCA77)) >>> 0;
+  if (state === 0) state = 0xA5A5A5A5;
+  for (let index = chapterLength - 1; index > 0; index -= 1) {
+    state = mix32(state);
+    const swap = state % (index + 1);
+    const held = offsets[index];
+    offsets[index] = offsets[swap];
+    offsets[swap] = held;
+  }
+  return offsets;
+}
+
+function presentedIndex(collectionId: string, start: number, length: number, cursor: number) {
+  const slot = Math.max(0, cursor - start);
+  if (practiceOrder !== 'random' || length < 2) return start + Math.min(slot, Math.max(0, length - 1));
+  return start + (chapterOffsets(collectionId, start, length)[slot] ?? 0);
+}
+
+function numberedPlacement(count: number, cursor: number) {
+  const length = effectiveChapterLength(count);
+  const chapterStart = Math.floor(cursor / length) * length;
+  return {
+    chapterIndex: Math.floor(cursor / length) + 1,
+    chapterCount: numberedChapterCount(count),
+    chapterStart,
+    chapterItemIndex: cursor - chapterStart + 1,
+    chapterItemCount: Math.max(1, Math.min(length, count - chapterStart)),
+    chapterTitle: '',
+    chapterTitles: [] as string[],
+  };
 }
 
 function sentencePlacement(article: { sentences: string[]; chapterTitles: string[]; chapterEnds: number[] }, index: number) {
-  if (!article.chapterEnds.length) {
-    return { chapterIndex: 1, chapterCount: 1, chapterStart: 0, chapterItemIndex: index + 1, chapterItemCount: article.sentences.length, chapterTitle: '', chapterTitles: [] as string[] };
-  }
   let start = 0;
   for (let chapter = 0; chapter < article.chapterEnds.length; chapter += 1) {
     const end = article.chapterEnds[chapter];
@@ -144,36 +219,80 @@ function sentencePlacement(article: { sentences: string[]; chapterTitles: string
     }
     start = end;
   }
-  return { chapterIndex: 1, chapterCount: 1, chapterStart: 0, chapterItemIndex: index + 1, chapterItemCount: article.sentences.length, chapterTitle: '', chapterTitles: article.chapterTitles };
+  return numberedPlacement(article.sentences.length, index);
 }
 
 export function previewCatalog(mode: PracticeMode = 'sentence', articleId = previewArticles[0].id, wordBookId = 'preview:cet4'): ContentCatalogSnapshot {
   const selectedArticle = previewArticles.some((article) => article.id === articleId) ? articleId : previewArticles[0].id;
   return {
     mode,
-    articles: previewArticles.map(article => ({ id: article.id, title: article.title, count: article.sentences.length, selected: article.id === selectedArticle, source: article.source, chapterCount: articleChapterCount(article), progress: 0, removable: false })),
-    wordBooks: [{ id: wordBookId, title: 'CET4_3 · preview', count: previewWords.length, selected: true, source: 'Web preview data', chapterCount: Math.ceil(previewWords.length / 20), progress: 0, removable: false }],
+    articles: previewArticles.map(article => ({
+      id: article.id,
+      title: article.title,
+      count: article.sentences.length,
+      selected: article.id === selectedArticle,
+      source: article.source,
+      chapterCount: article.chapterEnds.length || numberedChapterCount(article.sentences.length),
+      progress: 0,
+      removable: false,
+    })),
+    wordBooks: [{
+      id: wordBookId,
+      title: 'CET4_3 · preview',
+      count: previewWords.length,
+      selected: true,
+      source: 'Web preview data',
+      chapterCount: numberedChapterCount(previewWords.length),
+      progress: 0,
+      removable: false,
+    }],
   };
 }
 
 export function previewSnapshot(mode: PracticeMode = 'sentence', collectionId = previewArticles[0].id, itemIndex = 0, practice = freshPractice(), milliseconds = 0): PracticeSnapshot {
-  const collection = mode === 'sentence' ? previewArticles.find(article => article.id === collectionId) ?? previewArticles[0] : { id: 'preview:cet4', title: 'CET4_3 · preview', source: 'Web preview data', sentences: previewWords.map(word => word.name) };
-  const index = itemIndex % collection.sentences.length;
-  const word = mode === 'word' ? previewWords[index] : null;
-  const target = word?.name ?? collection.sentences[index];
+  const article = mode === 'sentence' ? previewArticles.find(item => item.id === collectionId) ?? previewArticles[0] : null;
+  const sentences = article ? article.sentences : previewWords.map(word => word.name);
+  const collection = article ?? {
+    id: 'preview:cet4',
+    title: 'CET4_3 · preview',
+    source: 'Web preview data',
+    sentences,
+    translations: [] as string[],
+    chapterTitles: [] as string[],
+    chapterEnds: [] as number[],
+  };
+  const cursor = ((itemIndex % sentences.length) + sentences.length) % sentences.length;
+  const placement = article && article.chapterEnds.length ? sentencePlacement(article, cursor) : numberedPlacement(sentences.length, cursor);
+  const contentIndex = presentedIndex(collection.id, placement.chapterStart, placement.chapterItemCount, cursor);
+  const word = mode === 'word' ? previewWords[contentIndex] ?? null : null;
+  const target = word?.name ?? sentences[contentIndex] ?? '';
   const stats = statistics(practice, target, milliseconds);
-  const sentence = mode === 'sentence' && 'chapterEnds' in collection ? sentencePlacement(collection, index) : null;
-  const chapterCount = mode === 'word' ? Math.max(1, Math.ceil(collection.sentences.length / 20)) : sentence?.chapterCount ?? 1;
-  const chapterIndex = mode === 'word' ? Math.floor(index / 20) + 1 : sentence?.chapterIndex ?? 1;
-  const chapterStart = mode === 'word' ? (chapterIndex - 1) * 20 : sentence?.chapterStart ?? 0;
-  const chapterItemCount = mode === 'word' ? Math.min(20, collection.sentences.length - chapterStart) : sentence?.chapterItemCount ?? collection.sentences.length;
-  const chapterItemIndex = mode === 'word' ? index - chapterStart + 1 : sentence?.chapterItemIndex ?? index + 1;
-  const useChapterProgress = mode === 'word' || chapterCount > 1;
-  const chapterProgress = useChapterProgress ? Math.min(100, Math.floor((chapterItemIndex - 1 + (stats.done ? 1 : 0)) / Math.max(1, chapterItemCount) * 100)) : stats.percent;
-  const isChapterLastItem = chapterItemIndex === chapterItemCount;
-  const isLastItem = index === collection.sentences.length - 1;
-  const translation = mode === 'sentence' && 'translations' in collection ? collection.translations[index] ?? '' : '';
-  return { mode, collectionId: collection.id, collectionTitle: collection.title, itemIndex: index + 1, itemCount: collection.sentences.length, chapterIndex, chapterCount, chapterItemIndex, chapterItemCount, chapterProgress, isChapterLastItem, isLastItem, target, word, chapterTitle: sentence?.chapterTitle ?? '', chapterTitles: sentence?.chapterTitles ?? [], translation, practice, stats };
+  const useChapterProgress = mode === 'word' || placement.chapterCount > 1;
+  const chapterProgress = useChapterProgress
+    ? Math.min(100, Math.floor((placement.chapterItemIndex - 1 + (stats.done ? 1 : 0)) / Math.max(1, placement.chapterItemCount) * 100))
+    : stats.percent;
+  const translation = article ? article.translations[contentIndex] ?? '' : '';
+  return {
+    mode,
+    collectionId: collection.id,
+    collectionTitle: collection.title,
+    itemIndex: cursor + 1,
+    itemCount: sentences.length,
+    chapterIndex: placement.chapterIndex,
+    chapterCount: placement.chapterCount,
+    chapterItemIndex: placement.chapterItemIndex,
+    chapterItemCount: placement.chapterItemCount,
+    chapterProgress,
+    isChapterLastItem: placement.chapterItemIndex === placement.chapterItemCount,
+    isLastItem: cursor === sentences.length - 1,
+    target,
+    word,
+    chapterTitle: placement.chapterTitle,
+    chapterTitles: placement.chapterTitles,
+    translation,
+    practice,
+    stats,
+  };
 }
 
 export function previewUpdate(snapshot: PracticeSnapshot, value: string, milliseconds: number): PracticeSnapshot {
@@ -200,13 +319,16 @@ export function previewSelectItem(snapshot: PracticeSnapshot, itemIndex: number)
 export function previewSelectChapter(snapshot: PracticeSnapshot, chapter: number): PracticeSnapshot {
   if (snapshot.mode === 'sentence') {
     const article = previewArticles.find(item => item.id === snapshot.collectionId) ?? previewArticles[0];
-    if (!article.chapterEnds.length) return chapter === 0 ? previewSnapshot(snapshot.mode, article.id, 0) : snapshot;
-    if (chapter < 0 || chapter >= article.chapterEnds.length) return snapshot;
-    const index = chapter === 0 ? 0 : article.chapterEnds[chapter - 1];
-    return previewSnapshot(snapshot.mode, article.id, index);
+    if (article.chapterEnds.length) {
+      if (chapter < 0 || chapter >= article.chapterEnds.length) return snapshot;
+      const index = chapter === 0 ? 0 : article.chapterEnds[chapter - 1];
+      return previewSnapshot(snapshot.mode, article.id, index);
+    }
   }
-  const index = Math.min(Math.max(0, chapter) * 20, snapshot.itemCount - 1);
-  return previewSnapshot(snapshot.mode, snapshot.collectionId, index);
+  const length = effectiveChapterLength(snapshot.itemCount);
+  const chapters = numberedChapterCount(snapshot.itemCount);
+  if (!Number.isInteger(chapter) || chapter < 0 || chapter >= chapters) return snapshot;
+  return previewSnapshot(snapshot.mode, snapshot.collectionId, Math.min(chapter * length, snapshot.itemCount - 1));
 }
 
 export function previewSelectMode(snapshot: PracticeSnapshot, mode: PracticeMode): PracticeSnapshot {

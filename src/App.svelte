@@ -16,10 +16,12 @@
     previewSelectItem,
     previewSnapshot,
     previewUpdate,
+    setPreviewLayout,
     summarizeChapter,
     type ContentCatalogSnapshot,
     type ChapterWordResult,
     type PracticeMode,
+    type PracticeOrder,
     type PracticeSnapshot,
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
@@ -44,6 +46,7 @@
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
   type ImportResult = { report: { title: string; count: number; duplicateCount: number; firstItem: string | null }; catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot };
+  setPreviewLayout(loadChapterLength(), loadPracticeOrder());
   const emptySnapshot = previewSnapshot();
 
   let localePreference = $state<LocalePreference>(loadLocalePreference());
@@ -51,6 +54,8 @@
   let themePreference = $state<ThemePreference>(loadThemePreference());
   let pronunciationPreference = $state<PronunciationPreference>(loadPronunciationPreference());
   let autoAdvanceWords = $state(loadAutoAdvanceWords());
+  let chapterLength = $state(loadChapterLength());
+  let practiceOrder = $state<PracticeOrder>(loadPracticeOrder());
   let sound = $state<SoundPreference>(loadSoundPreference());
   let appVersion = $state(packagedVersion);
   let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
@@ -168,6 +173,9 @@
     value: String(index),
     label: snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : ''),
   })));
+  let chapterLengthMax = $derived(Math.max(1, snapshot.itemCount));
+  let chapterLengthMin = $derived(Math.min(10, chapterLengthMax));
+  let effectiveChapterLength = $derived(Math.min(chapterLengthMax, Math.max(chapterLengthMin, chapterLength)));
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
 
@@ -395,6 +403,81 @@
     try { localStorage.setItem('typelet.word.autoAdvance', String(value)); } catch { /* browser storage may be unavailable */ }
     if (value) speakVisibleWord(snapshot, true);
     else stopPronunciation();
+  }
+
+  function loadChapterLength() {
+    try {
+      const value = Number(localStorage.getItem('typelet.practice.chapterLength'));
+      return Number.isInteger(value) && value >= 10 ? value : 20;
+    } catch { return 20; }
+  }
+
+  function loadPracticeOrder(): PracticeOrder {
+    try {
+      return localStorage.getItem('typelet.practice.order') === 'random' ? 'random' : 'book';
+    } catch { return 'book'; }
+  }
+
+  function commitChapterLength(input: HTMLInputElement) {
+    const parsed = Number(input.value);
+    if (!Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
+      input.value = String(effectiveChapterLength);
+      return;
+    }
+    const next = Math.min(chapterLengthMax, Math.max(chapterLengthMin, parsed));
+    input.value = String(next);
+    if (next === chapterLength) return;
+    void applyPracticeLayout(next, practiceOrder);
+  }
+
+  function choosePracticeOrder(order: PracticeOrder) {
+    if (order === practiceOrder) return;
+    void applyPracticeLayout(chapterLength, order);
+  }
+
+  async function applyPracticeLayout(nextLength: number, nextOrder: PracticeOrder) {
+    const previous = snapshot;
+    chapterLength = nextLength;
+    practiceOrder = nextOrder;
+    try {
+      localStorage.setItem('typelet.practice.chapterLength', String(nextLength));
+      localStorage.setItem('typelet.practice.order', nextOrder);
+    } catch { /* browser storage may be unavailable */ }
+    try {
+      if (isTauri) {
+        const next = await invoke<{ catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot }>('set_practice_layout', { chapterLength: nextLength, order: nextOrder });
+        catalog = next.catalog;
+        adoptLayoutSnapshot(previous, next.snapshot);
+      } else {
+        setPreviewLayout(nextLength, nextOrder);
+        const cursor = Math.max(0, previous.itemIndex - 1);
+        const kept = previewSnapshot(previous.mode, previous.collectionId, cursor, previous.practice);
+        const changed = kept.target !== previous.target;
+        const applied = changed ? previewSnapshot(previous.mode, previous.collectionId, cursor) : kept;
+        const progress = loadWebProgress();
+        catalog = previewCatalog(applied.mode, applied.mode === 'sentence' ? applied.collectionId : progress.sentenceId, applied.mode === 'word' ? applied.collectionId : progress.wordBookId);
+        adoptLayoutSnapshot(previous, applied);
+      }
+    } catch (error) {
+      importError = String(error);
+    }
+  }
+
+  function adoptLayoutSnapshot(previous: PracticeSnapshot, next: PracticeSnapshot) {
+    const targetChanged = next.target !== previous.target || next.collectionId !== previous.collectionId;
+    const chapterChanged = targetChanged || next.chapterIndex !== previous.chapterIndex;
+    if (chapterChanged) {
+      invalidateCompletion();
+      requestId += 1;
+      allowIncompleteNext = false;
+      resetPracticeClock();
+      chapterKey = '';
+    }
+    if (targetChanged) {
+      draft = '';
+      committedDraft = '';
+    }
+    applySnapshot(next, targetChanged);
   }
 
   function speechLevel() {
@@ -757,13 +840,11 @@
   async function loadPractice() {
     try {
       if (isTauri) {
-        const [nextCatalog, nextSnapshot] = await Promise.all([
-          invoke<ContentCatalogSnapshot>('get_content_catalog'),
-          invoke<PracticeSnapshot>('get_practice_snapshot'),
-        ]);
-        catalog = nextCatalog;
-        applySnapshot(nextSnapshot, true);
+        const next = await invoke<{ catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot }>('set_practice_layout', { chapterLength, order: practiceOrder });
+        catalog = next.catalog;
+        applySnapshot(next.snapshot, true);
       } else {
+        setPreviewLayout(chapterLength, practiceOrder);
         const progress = loadWebProgress();
         catalog = previewCatalog(progress.mode, progress.sentenceId, progress.wordBookId);
         const collectionId = progress.mode === 'word' ? progress.wordBookId : progress.sentenceId;
@@ -1572,6 +1653,20 @@
         <div class="segmented-control two-options" role="group" aria-label={t.practiceMode}>
           <button class:selected={snapshot.mode === 'sentence'} aria-pressed={snapshot.mode === 'sentence'} onclick={() => changeMode('sentence')}>{t.sentenceMode}</button>
           <button class:selected={snapshot.mode === 'word'} aria-pressed={snapshot.mode === 'word'} onclick={() => changeMode('word')}>{t.wordMode}</button>
+        </div>
+        <div class="setting-block">
+          <div class="settings-copy"><strong>{t.chapterLength}</strong><span>{t.chapterLengthHint}</span></div>
+          <label class="chapter-length">
+            <input type="number" min={chapterLengthMin} max={chapterLengthMax} step="1" value={effectiveChapterLength} disabled={chapterLengthMin === chapterLengthMax} aria-label={t.chapterLength} onchange={(event) => commitChapterLength(event.currentTarget as HTMLInputElement)} />
+            <span>{chapterLengthMin}-{chapterLengthMax}</span>
+          </label>
+        </div>
+        <div class="setting-block">
+          <div class="settings-copy"><strong>{t.practiceOrder}</strong><span>{t.practiceOrderHint}</span></div>
+          <div class="segmented-control two-options" role="group" aria-label={t.practiceOrder}>
+            <button class:selected={practiceOrder === 'book'} aria-pressed={practiceOrder === 'book'} onclick={() => choosePracticeOrder('book')}>{t.bookOrder}</button>
+            <button class:selected={practiceOrder === 'random'} aria-pressed={practiceOrder === 'random'} onclick={() => choosePracticeOrder('random')}>{t.randomOrder}</button>
+          </div>
         </div>
         {#if snapshot.mode === 'word'}
           <div class="setting-block">

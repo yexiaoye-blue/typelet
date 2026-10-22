@@ -182,6 +182,11 @@ progress::-moz-progress-bar { background: var(--action); }
 .version-value { color: var(--muted); font-size: 13px; font-weight: 400; font-variant-numeric: tabular-nums; user-select: text; }
 .setting-block { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); }
 .setting-block.is-disabled { opacity: .45; }
+.chapter-length { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.chapter-length input { width: 5.5em; height: 32px; padding: 0 8px; border: 1px solid var(--field-border); border-radius: 8px; background: var(--field); color: var(--ink); font: inherit; font-variant-numeric: tabular-nums; }
+.chapter-length input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.chapter-length input:disabled { opacity: .55; }
+.chapter-length span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .volume-control { --volume-fill: var(--action); display: grid; grid-template-columns: max-content 28px minmax(0, 1fr) 3.2em; align-items: center; gap: 8px; color: var(--ink); font-size: 13px; font-weight: 600; }
 .volume-control.is-muted { --volume-fill: var(--muted); }
 .mute-button.is-muted { color: var(--ink); }

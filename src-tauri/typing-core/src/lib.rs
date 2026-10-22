@@ -14,7 +14,47 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
-const CHAPTER_LENGTH: usize = 20;
+const DEFAULT_CHAPTER_LENGTH: usize = 20;
+const MIN_CHAPTER_LENGTH: usize = 10;
+
+/// Order used to present the items inside one chapter.
+///
+/// Random order does not move the saved collection cursor. That cursor is the
+/// word-book progress position, so changing this setting cannot relocate a
+/// collection in the library.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PracticeOrder {
+    /// Present the chapter in the collection's original order.
+    #[default]
+    Book,
+    /// Present the same chapter items in a stable shuffled order.
+    Random,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PracticeLayout {
+    chapter_length: usize,
+    order: PracticeOrder,
+}
+
+impl Default for PracticeLayout {
+    fn default() -> Self {
+        Self {
+            chapter_length: DEFAULT_CHAPTER_LENGTH,
+            order: PracticeOrder::Book,
+        }
+    }
+}
+
+impl PracticeLayout {
+    fn new(chapter_length: usize, order: PracticeOrder) -> Self {
+        Self {
+            chapter_length: normalize_requested_chapter_length(chapter_length),
+            order,
+        }
+    }
+}
 
 /// Text kept for the current practice item, plus the attempt counters.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -560,32 +600,40 @@ impl ContentCatalog {
 
     /// Return a compact selector snapshot.
     pub fn snapshot(&self) -> ContentCatalogSnapshot {
-        self.snapshot_with_positions(&BTreeMap::new())
+        self.snapshot_with_positions(&BTreeMap::new(), DEFAULT_CHAPTER_LENGTH)
     }
 
     /// Return a selector snapshot with saved progress for each collection.
+    ///
+    /// `chapter_length` changes numbered chapter counts only. Progress stays the
+    /// saved cursor divided by the collection size.
     pub fn snapshot_with_positions(
         &self,
         positions: &BTreeMap<String, usize>,
+        chapter_length: usize,
     ) -> ContentCatalogSnapshot {
         let articles = self
             .builtin_articles
             .iter()
-            .map(|article| self.article_summary(article, false, positions))
+            .map(|article| self.article_summary(article, false, positions, chapter_length))
             .chain(
                 self.articles
                     .iter()
-                    .map(|article| self.article_summary(article, true, positions)),
+                    .map(|article| self.article_summary(article, true, positions, chapter_length)),
             )
             .collect();
-        let word_books =
-            std::iter::once(self.word_book_summary(&self.builtin_word_book, false, positions))
-                .chain(
-                    self.word_books
-                        .iter()
-                        .map(|book| self.word_book_summary(book, true, positions)),
-                )
-                .collect();
+        let word_books = std::iter::once(self.word_book_summary(
+            &self.builtin_word_book,
+            false,
+            positions,
+            chapter_length,
+        ))
+        .chain(
+            self.word_books
+                .iter()
+                .map(|book| self.word_book_summary(book, true, positions, chapter_length)),
+        )
+        .collect();
         ContentCatalogSnapshot {
             mode: self.mode,
             articles,
@@ -674,6 +722,7 @@ impl ContentCatalog {
         article: &Article,
         removable: bool,
         positions: &BTreeMap<String, usize>,
+        chapter_length: usize,
     ) -> CollectionSummary {
         CollectionSummary {
             id: article.id.clone(),
@@ -681,7 +730,11 @@ impl ContentCatalog {
             count: article.sentences.len(),
             selected: self.article_id == article.id,
             source: article.source.clone(),
-            chapter_count: article_chapter_count(article),
+            chapter_count: if article.chapter_ends.is_empty() {
+                numbered_chapter_count(article.sentences.len(), chapter_length)
+            } else {
+                article.chapter_ends.len()
+            },
             progress: progress_percent(
                 positions.get(&article.id).copied().unwrap_or(0),
                 article.sentences.len(),
@@ -695,6 +748,7 @@ impl ContentCatalog {
         book: &WordBook,
         removable: bool,
         positions: &BTreeMap<String, usize>,
+        chapter_length: usize,
     ) -> CollectionSummary {
         CollectionSummary {
             id: book.id.clone(),
@@ -702,7 +756,7 @@ impl ContentCatalog {
             count: book.words.len(),
             selected: self.word_book_id == book.id,
             source: book.source.clone(),
-            chapter_count: chapter_count(book.words.len()),
+            chapter_count: numbered_chapter_count(book.words.len(), chapter_length),
             progress: progress_percent(
                 positions.get(&book.id).copied().unwrap_or(0),
                 book.words.len(),
@@ -751,25 +805,41 @@ impl ContentCatalog {
         mode: PracticeMode,
         id: &str,
         index: usize,
+        layout: PracticeLayout,
     ) -> Result<PracticeItem, ContentError> {
         match mode {
             PracticeMode::Sentence => {
                 let article = self
                     .article(id)
                     .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
+                let authored = !article.chapter_ends.is_empty();
+                let span = if authored {
+                    article_span(article, index)
+                } else {
+                    numbered_span(index, article.sentences.len(), layout.chapter_length)
+                };
+                let content_index =
+                    presented_index(&article.id, span.start, span.len, index, layout.order);
                 let target = article
                     .sentences
-                    .get(index)
+                    .get(content_index)
                     .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
-                let span = article_span(article, index);
                 Ok(PracticeItem {
                     collection_title: article.title.clone(),
                     item_count: article.sentences.len(),
                     target: target.clone(),
                     word: None,
-                    translation: article.translations.get(index).cloned().unwrap_or_default(),
+                    translation: article
+                        .translations
+                        .get(content_index)
+                        .cloned()
+                        .unwrap_or_default(),
                     chapter_title: span.title,
-                    chapter_titles: article.chapter_titles.clone(),
+                    chapter_titles: if authored {
+                        article.chapter_titles.clone()
+                    } else {
+                        Vec::new()
+                    },
                     chapter_index: span.index,
                     chapter_count: span.count,
                     chapter_start: span.start,
@@ -780,13 +850,13 @@ impl ContentCatalog {
                 let book = self
                     .word_book(id)
                     .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
+                let span = numbered_span(index, book.words.len(), layout.chapter_length);
+                let content_index =
+                    presented_index(&book.id, span.start, span.len, index, layout.order);
                 let word = book
                     .words
-                    .get(index)
+                    .get(content_index)
                     .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
-                let chapters = chapter_count(book.words.len());
-                let current_chapter = index / CHAPTER_LENGTH;
-                let start = current_chapter * CHAPTER_LENGTH;
                 Ok(PracticeItem {
                     collection_title: book.title.clone(),
                     item_count: book.words.len(),
@@ -795,10 +865,10 @@ impl ContentCatalog {
                     translation: String::new(),
                     chapter_title: String::new(),
                     chapter_titles: Vec::new(),
-                    chapter_index: current_chapter,
-                    chapter_count: chapters,
-                    chapter_start: start,
-                    chapter_len: (book.words.len() - start).min(CHAPTER_LENGTH),
+                    chapter_index: span.index,
+                    chapter_count: span.count,
+                    chapter_start: span.start,
+                    chapter_len: span.len,
                 })
             }
         }
@@ -809,31 +879,31 @@ impl ContentCatalog {
         mode: PracticeMode,
         id: &str,
         chapter: usize,
+        layout: PracticeLayout,
     ) -> Result<usize, ContentError> {
         match mode {
             PracticeMode::Word => {
-                let count = self.item_count(mode, id)?;
-                let chapters = chapter_count(count);
-                if chapter >= chapters {
-                    return Err(ContentError::InvalidChapter {
-                        chapter,
-                        count: chapters,
-                    });
-                }
-                Ok(chapter * CHAPTER_LENGTH)
+                numbered_chapter_start(self.item_count(mode, id)?, chapter, layout.chapter_length)
             }
             PracticeMode::Sentence => {
                 let article = self
                     .article(id)
                     .ok_or_else(|| ContentError::UnknownCollection(id.to_owned()))?;
-                let chapters = article_chapter_count(article);
+                if article.chapter_ends.is_empty() {
+                    return numbered_chapter_start(
+                        article.sentences.len(),
+                        chapter,
+                        layout.chapter_length,
+                    );
+                }
+                let chapters = article.chapter_ends.len();
                 if chapter >= chapters {
                     return Err(ContentError::InvalidChapter {
                         chapter,
                         count: chapters,
                     });
                 }
-                if article.chapter_ends.is_empty() || chapter == 0 {
+                if chapter == 0 {
                     Ok(0)
                 } else {
                     Ok(article.chapter_ends[chapter - 1])
@@ -867,6 +937,7 @@ pub struct PracticeSession {
     word_index: usize,
     positions: BTreeMap<String, usize>,
     practice: Practice,
+    layout: PracticeLayout,
 }
 
 impl PracticeSession {
@@ -882,6 +953,7 @@ impl PracticeSession {
             word_index: 0,
             positions: BTreeMap::new(),
             practice: Practice::default(),
+            layout: PracticeLayout::default(),
         })
     }
 
@@ -923,6 +995,32 @@ impl PracticeSession {
         &self.positions
     }
 
+    /// Requested chapter size before the open collection clamps it.
+    pub fn chapter_length(&self) -> usize {
+        self.layout.chapter_length
+    }
+
+    /// Change numbered chapter size and the order inside a chapter.
+    ///
+    /// The saved cursor stays where it is, so library progress does not move.
+    pub fn set_layout(
+        &mut self,
+        catalog: &ContentCatalog,
+        chapter_length: usize,
+        order: PracticeOrder,
+    ) -> Result<PracticeSnapshot, ContentError> {
+        self.sync_selection(catalog)?;
+        let previous =
+            catalog.current_item(self.mode, &self.collection_id, self.item_index, self.layout)?;
+        self.layout = PracticeLayout::new(chapter_length, order);
+        let next =
+            catalog.current_item(self.mode, &self.collection_id, self.item_index, self.layout)?;
+        if next.target != previous.target {
+            self.practice = Practice::default();
+        }
+        self.make_snapshot(catalog, 0)
+    }
+
     /// Positions that should be written with the content state.
     pub fn stored_indexes(&self) -> (usize, usize) {
         match self.mode {
@@ -949,7 +1047,8 @@ impl PracticeSession {
         milliseconds: u64,
     ) -> Result<PracticeSnapshot, ContentError> {
         self.sync_selection(catalog)?;
-        let item = catalog.current_item(self.mode, &self.collection_id, self.item_index)?;
+        let item =
+            catalog.current_item(self.mode, &self.collection_id, self.item_index, self.layout)?;
         self.practice = update_practice(&self.practice, value, &item.target);
         self.make_snapshot(catalog, milliseconds)
     }
@@ -1001,7 +1100,8 @@ impl PracticeSession {
         chapter: usize,
     ) -> Result<PracticeSnapshot, ContentError> {
         self.sync_selection(catalog)?;
-        self.item_index = catalog.chapter_start(self.mode, &self.collection_id, chapter)?;
+        self.item_index =
+            catalog.chapter_start(self.mode, &self.collection_id, chapter, self.layout)?;
         self.practice = Practice::default();
         self.remember_position();
         self.make_snapshot(catalog, 0)
@@ -1049,7 +1149,8 @@ impl PracticeSession {
         catalog: &ContentCatalog,
         milliseconds: u64,
     ) -> Result<PracticeSnapshot, ContentError> {
-        let item = catalog.current_item(self.mode, &self.collection_id, self.item_index)?;
+        let item =
+            catalog.current_item(self.mode, &self.collection_id, self.item_index, self.layout)?;
         let stats = statistics(&self.practice, &item.target, milliseconds);
         let completed_items = self.item_index - item.chapter_start + usize::from(stats.done);
         let chapter_progress = if self.mode == PracticeMode::Sentence && item.chapter_count == 1 {
@@ -1087,8 +1188,111 @@ impl PracticeSession {
     }
 }
 
-fn chapter_count(item_count: usize) -> usize {
-    item_count.div_ceil(CHAPTER_LENGTH).max(1)
+fn normalize_requested_chapter_length(value: usize) -> usize {
+    if value == 0 {
+        DEFAULT_CHAPTER_LENGTH
+    } else {
+        value.max(MIN_CHAPTER_LENGTH)
+    }
+}
+
+fn effective_chapter_length(requested: usize, count: usize) -> usize {
+    let requested = normalize_requested_chapter_length(requested);
+    if count == 0 {
+        return requested;
+    }
+    let min = MIN_CHAPTER_LENGTH.min(count);
+    requested.clamp(min, count)
+}
+
+fn numbered_chapter_count(item_count: usize, requested: usize) -> usize {
+    if item_count == 0 {
+        return 1;
+    }
+    item_count
+        .div_ceil(effective_chapter_length(requested, item_count))
+        .max(1)
+}
+
+fn numbered_chapter_start(
+    item_count: usize,
+    chapter: usize,
+    requested: usize,
+) -> Result<usize, ContentError> {
+    let chapters = numbered_chapter_count(item_count, requested);
+    if chapter >= chapters {
+        return Err(ContentError::InvalidChapter {
+            chapter,
+            count: chapters,
+        });
+    }
+    Ok(chapter * effective_chapter_length(requested, item_count))
+}
+
+fn numbered_span(cursor: usize, item_count: usize, requested: usize) -> ArticleSpan {
+    let length = effective_chapter_length(requested, item_count.max(1));
+    let chapter = if item_count == 0 { 0 } else { cursor / length };
+    let start = chapter.saturating_mul(length);
+    let end = start.saturating_add(length).min(item_count);
+    ArticleSpan {
+        index: chapter,
+        count: numbered_chapter_count(item_count, requested),
+        start,
+        len: end.saturating_sub(start).max(1),
+        title: String::new(),
+    }
+}
+
+/// Stable order for one chapter. The saved cursor is not part of the seed, so
+/// shuffling cannot move a collection's progress position.
+fn chapter_offsets(collection_id: &str, chapter_start: usize, chapter_len: usize) -> Vec<usize> {
+    let mut offsets: Vec<usize> = (0..chapter_len).collect();
+    if chapter_len < 2 {
+        return offsets;
+    }
+    let mut state = hash32(collection_id)
+        ^ (chapter_start as u32).wrapping_mul(0x9E37_79B1)
+        ^ (chapter_len as u32).wrapping_mul(0x85EB_CA77);
+    if state == 0 {
+        state = 0xA5A5_A5A5;
+    }
+    for index in (1..chapter_len).rev() {
+        state = mix32(state);
+        let swap = state as usize % (index + 1);
+        offsets.swap(index, swap);
+    }
+    offsets
+}
+
+fn hash32(id: &str) -> u32 {
+    let mut hash = 2_166_136_261u32;
+    for byte in id.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(16_777_619);
+    }
+    hash
+}
+
+fn mix32(mut value: u32) -> u32 {
+    value ^= value.wrapping_shl(13);
+    value ^= value >> 17;
+    value ^= value.wrapping_shl(5);
+    value
+}
+
+fn presented_index(
+    collection_id: &str,
+    chapter_start: usize,
+    chapter_len: usize,
+    cursor: usize,
+    order: PracticeOrder,
+) -> usize {
+    let slot = cursor.saturating_sub(chapter_start);
+    if order != PracticeOrder::Random || chapter_len < 2 {
+        return chapter_start + slot.min(chapter_len.saturating_sub(1));
+    }
+    let offsets = chapter_offsets(collection_id, chapter_start, chapter_len);
+    chapter_start + offsets.get(slot).copied().unwrap_or(0)
 }
 
 /// Percentage of a collection already passed. The index is the next item to practice.
@@ -1105,14 +1309,6 @@ fn attempt_reaches_end(practice: &Practice, target: &str) -> bool {
     let typed = practice.text.nfc().count();
     let expected = target.nfc().count();
     expected > 0 && typed >= expected
-}
-
-fn article_chapter_count(article: &Article) -> usize {
-    if article.chapter_ends.is_empty() {
-        1
-    } else {
-        article.chapter_ends.len()
-    }
 }
 
 struct ArticleSpan {
@@ -1602,7 +1798,7 @@ mod tests {
             .expect("sample position restores");
         assert_eq!(sample_again.item_index, 6);
 
-        let listed = catalog.snapshot_with_positions(session.positions());
+        let listed = catalog.snapshot_with_positions(session.positions(), session.chapter_length());
         let cet4_progress = listed
             .word_books
             .iter()
@@ -1738,5 +1934,218 @@ mod tests {
         assert_eq!(second.chapter_title, "怦然心动");
         assert_eq!(second.chapter_index, 2);
         assert_eq!(second.item_index, 12);
+    }
+
+    fn sample_words(count: usize) -> Vec<WordEntry> {
+        (0..count)
+            .map(|index| WordEntry {
+                name: format!("word{index}"),
+                trans: vec!["词".to_owned()],
+                usphone: String::new(),
+                ukphone: String::new(),
+            })
+            .collect()
+    }
+
+    fn chapter_targets(session: &mut PracticeSession, catalog: &ContentCatalog) -> Vec<String> {
+        let mut current = session.snapshot(catalog, 0).expect("chapter can be read");
+        let mut names = vec![current.target.clone()];
+        while !current.is_chapter_last_item {
+            current = session
+                .update(catalog, &current.target, 1_000)
+                .expect("item can be completed");
+            assert!(current.stats.done);
+            current = session.advance(catalog).expect("chapter has another item");
+            names.push(current.target.clone());
+        }
+        names
+    }
+
+    #[test]
+    fn chapter_length_regroups_words_without_moving_the_saved_place() {
+        let mut catalog = ContentCatalog::new().expect("embedded content is valid");
+        catalog.set_mode(PracticeMode::Word);
+        let mut session = PracticeSession::with_stored_progress(&catalog, 0, 25)
+            .expect("stored word can be restored");
+        let positions = session.positions().clone();
+        let snapshot = session
+            .set_layout(&catalog, 10, PracticeOrder::Book)
+            .expect("chapter length can change");
+        assert_eq!(snapshot.item_index, 26);
+        assert_eq!(snapshot.chapter_index, 3);
+        assert_eq!(snapshot.chapter_item_index, 6);
+        assert_eq!(snapshot.chapter_item_count, 10);
+        assert_eq!(session.positions(), &positions);
+
+        let selected = session
+            .select_chapter(&catalog, 1)
+            .expect("second short chapter exists");
+        assert_eq!(selected.item_index, 11);
+        assert_eq!(selected.chapter_item_index, 1);
+    }
+
+    #[test]
+    fn chapter_length_clamps_to_the_open_collection() {
+        let mut catalog = ContentCatalog::new().expect("embedded content is valid");
+        catalog.set_mode(PracticeMode::Word);
+        catalog.add_word_book(WordBook {
+            id: "import:short".to_owned(),
+            title: "短词本".to_owned(),
+            source: "test".to_owned(),
+            words: sample_words(12),
+        });
+        let mut session = PracticeSession::new(&catalog).expect("short book can be practiced");
+        let whole = session
+            .set_layout(&catalog, 100, PracticeOrder::Book)
+            .expect("large chapter length is clamped");
+        assert_eq!(whole.chapter_count, 1);
+        assert_eq!(whole.chapter_item_count, 12);
+        assert_eq!(session.chapter_length(), 100);
+
+        let split = session
+            .set_layout(&catalog, 5, PracticeOrder::Book)
+            .expect("short chapter length is raised to the minimum");
+        assert_eq!(session.chapter_length(), 10);
+        assert_eq!(split.chapter_count, 2);
+        assert_eq!(split.chapter_item_count, 10);
+        let last = session
+            .select_chapter(&catalog, 1)
+            .expect("remainder chapter exists");
+        assert_eq!(last.item_index, 11);
+        assert_eq!(last.chapter_item_count, 2);
+    }
+
+    #[test]
+    fn random_order_shuffles_only_the_current_chapter_and_keeps_progress() {
+        let mut catalog = ContentCatalog::new().expect("embedded content is valid");
+        catalog.set_mode(PracticeMode::Word);
+        let mut session = PracticeSession::with_stored_progress(&catalog, 0, 20)
+            .expect("stored word can be restored");
+        let positions = session.positions().clone();
+        let book = session
+            .snapshot(&catalog, 0)
+            .expect("book order can be read");
+        let progress = catalog
+            .snapshot_with_positions(session.positions(), session.chapter_length())
+            .word_books
+            .into_iter()
+            .find(|item| item.id == "builtin:cet4_3")
+            .map(|item| item.progress);
+
+        let random = session
+            .set_layout(&catalog, 20, PracticeOrder::Random)
+            .expect("random order can be selected");
+        assert_eq!(random.item_index, book.item_index);
+        assert_eq!(random.chapter_index, book.chapter_index);
+        assert_eq!(session.positions(), &positions);
+        let random_progress = catalog
+            .snapshot_with_positions(session.positions(), session.chapter_length())
+            .word_books
+            .into_iter()
+            .find(|item| item.id == "builtin:cet4_3")
+            .map(|item| item.progress);
+        assert_eq!(random_progress, progress);
+
+        session
+            .set_layout(&catalog, 20, PracticeOrder::Book)
+            .expect("book order can be restored");
+        let restored = session
+            .snapshot(&catalog, 0)
+            .expect("cursor can be read again");
+        assert_eq!(restored.target, book.target);
+        assert_eq!(restored.item_index, book.item_index);
+        assert_eq!(session.positions(), &positions);
+
+        let mut ordered = PracticeSession::new(&catalog).expect("word book can restart");
+        let book_names = chapter_targets(&mut ordered, &catalog);
+        let mut shuffled = PracticeSession::new(&catalog).expect("word book can restart");
+        shuffled
+            .set_layout(&catalog, 20, PracticeOrder::Random)
+            .expect("chapter can be shuffled");
+        let random_names = chapter_targets(&mut shuffled, &catalog);
+        assert_eq!(book_names.len(), 20);
+        assert_eq!(random_names.len(), 20);
+        let mut book_sorted = book_names.clone();
+        let mut random_sorted = random_names.clone();
+        book_sorted.sort();
+        random_sorted.sort();
+        assert_eq!(random_sorted, book_sorted);
+        assert_ne!(random_names, book_names);
+        assert_eq!(
+            chapter_offsets("builtin:cet4_3", 0, 8),
+            vec![7, 0, 3, 6, 2, 5, 4, 1]
+        );
+    }
+
+    #[test]
+    fn flat_sentences_follow_chapter_length_and_movies_keep_their_chapters() {
+        let mut catalog = ContentCatalog::new().expect("embedded content is valid");
+        catalog.add_article(Article {
+            id: "test:flat".to_owned(),
+            title: "平文章".to_owned(),
+            source: "test".to_owned(),
+            sentences: (0..25).map(|index| format!("Sentence {index}.")).collect(),
+            translations: Vec::new(),
+            chapter_titles: Vec::new(),
+            chapter_ends: Vec::new(),
+        });
+        let mut session = PracticeSession::new(&catalog).expect("flat article can be practiced");
+        let first = session
+            .snapshot(&catalog, 0)
+            .expect("flat article can be read");
+        assert_eq!(first.chapter_count, 2);
+        assert_eq!(first.chapter_item_count, 20);
+        assert_eq!(first.target, "Sentence 0.");
+        session
+            .select_item(&catalog, 22)
+            .expect("later sentence exists");
+        let moved = session
+            .set_layout(&catalog, 10, PracticeOrder::Book)
+            .expect("sentence chapter length can change");
+        assert_eq!(moved.item_index, 23);
+        assert_eq!(moved.target, "Sentence 22.");
+        assert_eq!(moved.chapter_index, 3);
+        assert_eq!(moved.chapter_item_index, 3);
+        assert_eq!(session.positions().get("test:flat").copied(), Some(22));
+
+        catalog
+            .select_article("builtin:movie-lines")
+            .expect("movies can be selected");
+        let movie = session
+            .set_layout(&catalog, 10, PracticeOrder::Book)
+            .expect("movie layout can be set");
+        assert_eq!(movie.chapter_count, 8);
+        assert_eq!(movie.chapter_item_count, 11);
+        assert_eq!(movie.chapter_title, "乱世佳人");
+        assert_eq!(movie.item_index, 1);
+
+        let mut shuffled = PracticeSession::new(&catalog).expect("movies can restart");
+        catalog.set_mode(PracticeMode::Sentence);
+        catalog
+            .select_article("builtin:movie-lines")
+            .expect("movies stay selected");
+        let book_names = {
+            let mut ordered = PracticeSession::new(&catalog).expect("movies can restart");
+            chapter_targets(&mut ordered, &catalog)
+        };
+        shuffled
+            .set_layout(&catalog, 10, PracticeOrder::Random)
+            .expect("movie chapter can be shuffled");
+        let random_names = chapter_targets(&mut shuffled, &catalog);
+        assert_eq!(random_names.len(), book_names.len());
+        let mut book_sorted = book_names.clone();
+        let mut random_sorted = random_names.clone();
+        book_sorted.sort();
+        random_sorted.sort();
+        assert_eq!(random_sorted, book_sorted);
+        let next_movie = shuffled
+            .select_chapter(&catalog, 1)
+            .expect("second movie exists");
+        assert_eq!(next_movie.item_index, 12);
+        assert_eq!(next_movie.chapter_title, "怦然心动");
+        assert_eq!(
+            shuffled.positions().get("builtin:movie-lines").copied(),
+            Some(11)
+        );
     }
 }
