@@ -82,9 +82,17 @@ jobs:
           fi
 
   build-linux:
-    name: Linux DEB and AppImage
+    name: Linux DEB and AppImage (${{ matrix.arch }})
     needs: metadata
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -120,6 +128,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: ${{ matrix.arch }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -130,16 +139,26 @@ jobs:
       - name: Upload Linux packages
         uses: actions/upload-artifact@v4
         with:
-          name: typelet-linux-deb-appimage
+          name: typelet-linux-deb-appimage-${{ matrix.arch }}
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   build-rpm:
-    name: Fedora RPM
+    name: Fedora RPM (${{ matrix.arch }})
     needs: metadata
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -147,7 +166,7 @@ jobs:
       - name: Build RPM in Fedora 44
         run: |
           mkdir -p .ci/cargo .ci/rustup
-          docker run --rm \
+          docker run --rm --platform ${{ matrix.platform }} \
             -v "$PWD":/work \
             -w /work \
             -e CARGO_HOME=/work/.ci/cargo \
@@ -162,14 +181,22 @@ jobs:
       - name: Upload RPM
         uses: actions/upload-artifact@v4
         with:
-          name: typelet-linux-rpm
+          name: typelet-linux-rpm-${{ matrix.arch }}
           path: src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
   build-windows:
-    name: Windows MSI and NSIS installer
+    name: Windows MSI and NSIS installer (${{ matrix.arch }})
     needs: metadata
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+          - arch: aarch64
+            runner: windows-11-arm
     steps:
       - name: Check out source
         uses: actions/checkout@v7
@@ -187,6 +214,7 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: ${{ matrix.arch }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -197,7 +225,7 @@ jobs:
       - name: Upload Windows installers
         uses: actions/upload-artifact@v4
         with:
-          name: typelet-windows
+          name: typelet-windows-${{ matrix.arch }}
           path: |
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/nsis/*.exe
@@ -239,25 +267,66 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
 
-          mapfile -d '' rpms < <(find release-artifacts -type f -name '*.rpm' -print0)
-          mapfile -d '' debs < <(find release-artifacts -type f -name '*.deb' -print0)
-          mapfile -d '' appimages < <(find release-artifacts -type f -iname '*.appimage' -print0)
-          mapfile -d '' msis < <(find release-artifacts -type f -name '*.msi' -print0)
-          mapfile -d '' nsis_installers < <(find release-artifacts -type f -name '*.exe' -print0)
+          release_arch() {
+            local name
+            name=$(basename "$1")
+            case "$name" in
+              *aarch64*|*arm64*)
+                printf '%s\n' aarch64
+                ;;
+              *x86_64*|*amd64*|*_x64-*|*_x64_*)
+                printf '%s\n' x86_64
+                ;;
+              *)
+                echo "Cannot tell architecture from $name" >&2
+                return 1
+                ;;
+            esac
+          }
 
-          test "${#rpms[@]}" -eq 1
-          test "${#debs[@]}" -eq 1
-          test "${#appimages[@]}" -eq 1
-          test "${#msis[@]}" -eq 1
-          test "${#nsis_installers[@]}" -eq 1
+          place() {
+            local src="$1" middle="$2" ext="$3" arch dest
+            arch=$(release_arch "$src")
+            dest="release-assets/typelet-${RELEASE_TAG}-${middle}-${arch}${ext}"
+            if [[ -e "$dest" ]]; then
+              echo "Duplicate package $dest from $src" >&2
+              exit 1
+            fi
+            cp "$src" "$dest"
+          }
 
-          cp "${rpms[0]}" "release-assets/typelet-${RELEASE_TAG}-fedora-x86_64.rpm"
-          cp "${debs[0]}" "release-assets/typelet-${RELEASE_TAG}-linux-x86_64.deb"
-          cp "${appimages[0]}" "release-assets/typelet-${RELEASE_TAG}-linux-x86_64.AppImage"
-          cp "${msis[0]}" "release-assets/typelet-${RELEASE_TAG}-windows-x86_64.msi"
-          cp "${nsis_installers[0]}" "release-assets/typelet-${RELEASE_TAG}-windows-x86_64-setup.exe"
+          while IFS= read -r -d '' file; do
+            place "$file" fedora .rpm
+          done < <(find release-artifacts -type f -name '*.rpm' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" linux .deb
+          done < <(find release-artifacts -type f -name '*.deb' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" linux .AppImage
+          done < <(find release-artifacts -type f -iname '*.appimage' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" windows .msi
+          done < <(find release-artifacts -type f -name '*.msi' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" windows -setup.exe
+          done < <(find release-artifacts -type f -name '*.exe' -print0)
 
-          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
+          expected=(
+            "typelet-${RELEASE_TAG}-fedora-x86_64.rpm"
+            "typelet-${RELEASE_TAG}-fedora-aarch64.rpm"
+            "typelet-${RELEASE_TAG}-linux-x86_64.deb"
+            "typelet-${RELEASE_TAG}-linux-aarch64.deb"
+            "typelet-${RELEASE_TAG}-linux-x86_64.AppImage"
+            "typelet-${RELEASE_TAG}-linux-aarch64.AppImage"
+            "typelet-${RELEASE_TAG}-windows-x86_64.msi"
+            "typelet-${RELEASE_TAG}-windows-aarch64.msi"
+            "typelet-${RELEASE_TAG}-windows-x86_64-setup.exe"
+            "typelet-${RELEASE_TAG}-windows-aarch64-setup.exe"
+          )
+          for name in "${expected[@]}"; do
+            test -f "release-assets/$name"
+          done
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 10
 
       - name: Publish release and attach packages
         uses: softprops/action-gh-release@v2
