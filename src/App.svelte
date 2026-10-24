@@ -296,6 +296,9 @@
       }
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
+        // Escape inside a text field must not throw away unsaved edits by leaving settings.
+        const origin = event.target as HTMLElement | null;
+        if (origin?.closest('input, textarea, select, [role="combobox"], [role="listbox"]')) return;
         event.preventDefault();
         void navigateBack();
         return;
@@ -632,6 +635,8 @@
       event.preventDefault();
       chooseFont(fontChoiceList[fontHighlight].value);
     } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
       closeFontMenu();
     }
   }
