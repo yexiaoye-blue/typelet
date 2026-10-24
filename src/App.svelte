@@ -190,6 +190,7 @@
   let effectiveChapterLength = $derived(Math.min(chapterLengthMax, Math.max(chapterLengthMin, chapterLength)));
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
+  let celebrationBurst: ReturnType<typeof confetti.create> | undefined;
 
   $effect(() => {
     if (typeof document === 'undefined') return;
@@ -213,9 +214,10 @@
     if (!canvas || celebratedChapter === key) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     celebratedChapter = key;
-    const burst = confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    // The canvas lives for the whole practice view; one burst instance per element.
+    celebrationBurst ??= confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
   });
 
   function handlePracticeNavigationKey(event: KeyboardEvent) {
