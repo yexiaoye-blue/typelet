@@ -265,6 +265,9 @@
       if (view !== 'practice') return;
       if (chapterPaused) {
         if (event.key === 'Enter' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          // A focused chapter button keeps its own Enter activation.
+          const target = event.target as HTMLElement | null;
+          if (target?.closest('.practice-page button')) return;
           event.preventDefault();
           void continueAndStart();
         }
@@ -1184,6 +1187,7 @@
       const reachedEnd = snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length;
       if (chapterPaused || !stats.done && !reachedEnd) return;
       if (snapshot.isLastItem) {
+        practicePhase = 'paused';
         chapterPaused = true;
         return;
       }
