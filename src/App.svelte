@@ -774,10 +774,9 @@
   function restorePracticeTypingFocus(event: MouseEvent) {
     const control = practiceButton(event);
     if (!control || control.closest('.settings-select')) return;
-    if (event.type === 'mousedown') {
-      event.preventDefault();
-      return;
-    }
+    // Keep the caret in the capture field without cancelling the button click.
+    // WebKitGTK drops the click when mousedown is cancelled, so only move focus afterward.
+    if (event.type === 'mousedown') return;
     if (document.activeElement === control) control.blur();
     focusInput();
   }
@@ -1041,7 +1040,10 @@
   }
   function markSurfacePress(event: PointerEvent) {
     const origin = event.target as HTMLElement | null;
-    surfacePressed = view === 'practice' && !origin?.closest('select, button');
+    const interactive = origin?.closest('button, select, a, input, textarea, summary, [role="button"]');
+    surfacePressed = view === 'practice' && !interactive;
+    // A click inside the window must keep Typelet above the window underneath.
+    void appWindow?.setFocus();
   }
 
   function handleFocus() {
@@ -1465,8 +1467,8 @@
   async function close() { await appWindow?.close(); }
 
   async function dragWindow(event: MouseEvent) {
-    const targetElement = event.target as HTMLElement;
-    if (targetElement.closest('button, select')) return;
+    const targetElement = event.target as HTMLElement | null;
+    if (targetElement?.closest('button, select, a, input, textarea')) return;
     await appWindow?.startDragging();
   }
 
