@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{Manager, State};
 use typelet_typing::{
@@ -63,7 +64,11 @@ fn save_content(state: &AppState) -> Result<(), String> {
     stored.word_index = word_index;
     stored.positions = session.positions().clone();
     let json = serde_json::to_vec_pretty(&stored).map_err(|error| error.to_string())?;
-    fs::write(&state.storage_path, json)
+    // Write to a sibling file and rename over the target so a crash mid-save
+    // cannot leave a half-written content.json behind.
+    let temp_path = state.storage_path.with_extension("json.tmp");
+    fs::write(&temp_path, json).map_err(|error| format!("{}: {error}", temp_path.display()))?;
+    fs::rename(&temp_path, &state.storage_path)
         .map_err(|error| format!("{}: {error}", state.storage_path.display()))
 }
 
@@ -378,6 +383,41 @@ fn remove_word_book(state: State<'_, AppState>, id: String) -> Result<CatalogUpd
     remove_collection(&state, false, &id)
 }
 
+// A corrupt or unreadable content.json must not keep the app from starting:
+// park the broken file next to the real one and fall back to built-in content.
+fn load_stored_state(data_dir: &Path, storage_path: &Path) -> StoredContentState {
+    if !storage_path.is_file() {
+        return StoredContentState::default();
+    }
+    let parsed = fs::read(storage_path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice::<StoredContentState>(&bytes).map_err(|error| error.to_string())
+        });
+    match parsed {
+        Ok(stored) => stored,
+        Err(error) => {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let backup = data_dir.join(format!("content.json.corrupt-{stamp}"));
+            if let Err(rename_error) = fs::rename(storage_path, &backup) {
+                eprintln!(
+                    "content.json 无法解析（{error}），且备份到 {} 失败：{rename_error}",
+                    backup.display()
+                );
+            } else {
+                eprintln!(
+                    "content.json 无法解析（{error}），已改名为 {}，使用内置内容继续",
+                    backup.display()
+                );
+            }
+            StoredContentState::default()
+        }
+    }
+}
+
 fn use_x11_when_gnome_ignores_pin() {
     #[cfg(target_os = "linux")]
     {
@@ -420,13 +460,7 @@ fn main() {
                 .map_err(|error| error.to_string())?;
             fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
             let storage_path = data_dir.join("content.json");
-            let stored = if storage_path.is_file() {
-                let bytes = fs::read(&storage_path).map_err(|error| error.to_string())?;
-                serde_json::from_slice::<StoredContentState>(&bytes)
-                    .map_err(|error| error.to_string())?
-            } else {
-                StoredContentState::default()
-            };
+            let stored = load_stored_state(&data_dir, &storage_path);
             let sentence_index = stored.sentence_index;
             let word_index = stored.word_index;
             let mut positions = stored.positions.clone();
