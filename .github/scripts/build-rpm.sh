@@ -14,6 +14,7 @@ dnf install -y \
   gzip \
   gcc \
   gcc-c++ \
+  clang \
   make \
   pkgconf-pkg-config \
   webkit2gtk4.1-devel \
