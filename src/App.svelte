@@ -190,6 +190,7 @@
   let effectiveChapterLength = $derived(Math.min(chapterLengthMax, Math.max(chapterLengthMin, chapterLength)));
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
+  let celebrationBurst: ReturnType<typeof confetti.create> | undefined;
 
   $effect(() => {
     if (typeof document === 'undefined') return;
@@ -213,9 +214,10 @@
     if (!canvas || celebratedChapter === key) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     celebratedChapter = key;
-    const burst = confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    // The canvas lives for the whole practice view; one burst instance per element.
+    celebrationBurst ??= confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
   });
 
   function handlePracticeNavigationKey(event: KeyboardEvent) {
@@ -265,6 +267,9 @@
       if (view !== 'practice') return;
       if (chapterPaused) {
         if (event.key === 'Enter' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          // A focused chapter button keeps its own Enter activation.
+          const target = event.target as HTMLElement | null;
+          if (target?.closest('.practice-page button')) return;
           event.preventDefault();
           void continueAndStart();
         }
@@ -293,6 +298,9 @@
       }
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
+        // Escape inside a text field must not throw away unsaved edits by leaving settings.
+        const origin = event.target as HTMLElement | null;
+        if (origin?.closest('input, textarea, select, [role="combobox"], [role="listbox"]')) return;
         event.preventDefault();
         void navigateBack();
         return;
@@ -388,7 +396,7 @@
 
   function commitChapterLength(input: HTMLInputElement) {
     const parsed = Number(input.value.trim());
-    if (!Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
+    if (!input.value.trim() || !Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
       input.value = String(effectiveChapterLength);
       return;
     }
@@ -629,6 +637,8 @@
       event.preventDefault();
       chooseFont(fontChoiceList[fontHighlight].value);
     } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
       closeFontMenu();
     }
   }
@@ -1184,6 +1194,11 @@
       const reachedEnd = snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length;
       if (chapterPaused || !stats.done && !reachedEnd) return;
       if (snapshot.isLastItem) {
+        if (!stats.done) {
+          // Enter-with-errors at the book end still counts this item in the summary.
+          rememberCompletedItem(snapshot);
+        }
+        practicePhase = 'paused';
         chapterPaused = true;
         return;
       }
@@ -1195,6 +1210,10 @@
   }
 
   async function restart(next = false) {
+    if (next && itemReachedEnd && !stats.done) {
+      // An item left through Enter-with-errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
     const keepChapterClock = !(next && snapshot.isChapterLastItem);
     invalidateCompletion();
     requestId += 1;
@@ -1224,9 +1243,14 @@
   }
 
   async function selectPracticeItem(itemIndex: number, allowNextAfterLeft: boolean) {
+    if (!allowNextAfterLeft && itemReachedEnd && !stats.done) {
+      // An item skipped with errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
     invalidateCompletion();
     requestId += 1;
-    resetPracticeClock();
+    // The chapter clock keeps running across item navigation; only the per-item origin moves.
+    itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
     composing = false;
     compositionText = '';
     draft = '';

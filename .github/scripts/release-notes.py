@@ -109,6 +109,11 @@ def main() -> int:
     head = os.environ.get("GITHUB_SHA") or git("rev-parse", "HEAD").strip()
     tag = os.environ.get("RELEASE_TAG", "")
     previous = previous_tag(head, tag)
+    if previous is None:
+        # With no reachable earlier tag the diff would be the whole repository
+        # history; a placeholder is more honest than that dump.
+        sys.stdout.write("这是 Typelet 第一个带标签的构建，没有可对比的上一个版本。\n")
+        return 0
     grouped = {title: [] for title in titles}
     for subject, body in commit_entries(previous, head):
         sections = bullets_from_body(body, title_set)

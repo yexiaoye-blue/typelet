@@ -331,7 +331,16 @@ function scheduleNative(volumePercent: number, requestedAt: number, request: num
   }).catch(error => {
     const message = errorText(error);
     traceKeySound('start-failed', { request, message });
-    if (message.includes('not-ready') || message.includes('queue-full')) return;
+    if (message.includes('queue-full')) return;
+    if (message.includes('not-ready')) {
+      // The engine was rebuilt after a device switch and lost its clip; load it again.
+      nativeReady = false;
+      const pack = nativePack || queuedPack || keySoundPacks[0].id;
+      void loadPack(pack)
+        .then(() => scheduleNative(volumePercent, requestedAt, request))
+        .catch(() => { traceKeySound('load-failed', { request, pack }); });
+      return;
+    }
     nativeBroken = true;
     nativeReady = false;
     traceKeySound('native-fallback', { request, message });

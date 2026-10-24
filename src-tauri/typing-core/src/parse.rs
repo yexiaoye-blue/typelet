@@ -243,7 +243,11 @@ fn period_ends_sentence(characters: &[char], index: usize, start: usize) -> bool
         return false;
     }
     if next.is_some_and(|character| {
-        !character.is_whitespace() && !matches!(character, '"' | '\'' | '”' | '’' | '」' | '』')
+        !character.is_whitespace()
+            && !matches!(
+                character,
+                '"' | '\'' | '”' | '’' | '」' | '』' | '）' | ')' | ']' | '}'
+            )
     }) {
         return false;
     }
