@@ -16,7 +16,7 @@ mod agents;
 mod fonts;
 mod key_sound;
 
-use key_sound::{append_log, load_key_sound, log_path, play_key_sound};
+use key_sound::{load_key_sound, play_key_sound};
 
 struct AppState {
     content: Mutex<ContentCatalog>,
@@ -45,8 +45,8 @@ fn command_error(error: ContentError) -> String {
 
 #[tauri::command]
 fn log_key_sound(app: tauri::AppHandle, line: String) -> Result<(), String> {
-    let path = log_path(&app)?;
-    append_log(&path, &line)
+    key_sound::log_frontend(&app, line);
+    Ok(())
 }
 
 fn save_content(state: &AppState) -> Result<(), String> {

@@ -5,12 +5,12 @@
 //! adds a voice for every key. Voices overlap and always play to the end. Word
 //! pronunciation stays on the webview's media element.
 
-use std::fs::OpenOptions;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,17 +23,21 @@ const MAX_VOICES: usize = 32;
 const PREFERRED_FRAMES: u32 = 256;
 const TARGET_DB: f32 = -1.0;
 const MAX_MAKEUP: f32 = 32.0;
-
-static LOG_LOCK: Mutex<()> = Mutex::new(());
+// One rotated backup keeps the debug log from growing without bound.
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
 
 pub struct KeyAudio {
     inner: Mutex<Option<Engine>>,
+    // Set by the output stream's error callback so the next key rebuilds
+    // the engine instead of staying silent forever.
+    broken: Arc<AtomicBool>,
 }
 
 impl KeyAudio {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Mutex::new(None),
+            broken: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -57,12 +61,12 @@ pub struct PlayReport {
 
 struct Engine {
     commands: SyncSender<PlayCommand>,
+    logs: &'static SyncSender<LogEvent>,
     clip: Mutex<Option<Arc<[f32]>>>,
     next_voice: AtomicU64,
     rate: u32,
     channels: u16,
     buffer_frames: u32,
-    path: PathBuf,
     _stream: cpal::Stream,
 }
 
@@ -124,30 +128,192 @@ enum LogEvent {
         id: u64,
         request: u64,
     },
+    Queued {
+        voice: u64,
+        request: u64,
+        gain: f32,
+        ipc_ms: u64,
+    },
     Stream(String),
+    // A JSON line already rendered by the sender, for example from the webview.
+    Line(String),
 }
 
-pub fn log_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn log_path(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     Ok(directory.join("key-sound.log"))
 }
 
-pub fn append_log(path: &Path, line: &str) -> Result<(), String> {
-    let _guard = LOG_LOCK
-        .lock()
-        .map_err(|_| "按键音日志锁定失败".to_owned())?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| error.to_string())?;
-    writeln!(file, "{line}").map_err(|error| error.to_string())?;
-    file.flush().map_err(|error| error.to_string())?;
-    Ok(())
+// One process-wide log thread owns the log file; every producer hands over a
+// cheap enum so keystrokes never touch the filesystem.
+static LOG_SENDER: OnceLock<SyncSender<LogEvent>> = OnceLock::new();
+
+fn log_channel(app: &AppHandle) -> &'static SyncSender<LogEvent> {
+    LOG_SENDER.get_or_init(|| {
+        let Ok(path) = log_path(app) else {
+            return detached_log_sender();
+        };
+        let (sender, receiver) = sync_channel::<LogEvent>(1024);
+        let spawned = thread::Builder::new()
+            .name("typelet-key-log".to_owned())
+            .spawn(move || log_loop(path, receiver));
+        match spawned {
+            Ok(_handle) => sender,
+            Err(_) => detached_log_sender(),
+        }
+    })
+}
+
+fn detached_log_sender() -> SyncSender<LogEvent> {
+    // No usable log destination: hand out a sender whose receiver is gone so
+    // every write fails fast and logging never blocks playback.
+    let (sender, receiver) = sync_channel::<LogEvent>(1);
+    drop(receiver);
+    sender
+}
+
+pub fn log_frontend(app: &AppHandle, line: String) {
+    let _ = log_channel(app).try_send(LogEvent::Line(line));
+}
+
+struct LogWriter {
+    path: PathBuf,
+    file: Option<File>,
+    written: u64,
+}
+
+impl LogWriter {
+    fn open(path: PathBuf) -> Self {
+        let mut writer = Self {
+            path,
+            file: None,
+            written: 0,
+        };
+        writer.reopen();
+        writer
+    }
+
+    fn reopen(&mut self) {
+        self.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .ok();
+        self.written = self
+            .file
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+    }
+
+    fn rotate(&mut self) {
+        self.file = None;
+        let backup = self.path.with_extension("log.1");
+        let _ = fs::rename(&self.path, &backup);
+        self.reopen();
+    }
+
+    fn write(&mut self, line: String) {
+        if self.file.is_none() {
+            self.reopen();
+        }
+        let Some(file) = self.file.as_mut() else {
+            return;
+        };
+        let _ = writeln!(file, "{line}");
+        let _ = file.flush();
+        self.written += u64::try_from(line.len()).unwrap_or(0) + 1;
+        if self.written > MAX_LOG_BYTES {
+            self.rotate();
+        }
+    }
+}
+
+fn log_loop(path: PathBuf, receiver: Receiver<LogEvent>) {
+    let mut writer = LogWriter::open(path);
+    while let Ok(event) = receiver.recv() {
+        writer.write(render_log_line(event));
+    }
+}
+
+fn render_log_line(event: LogEvent) -> String {
+    match event {
+        LogEvent::Line(line) => line,
+        LogEvent::Clock {
+            playback_us,
+            frames,
+        } => event_line(&serde_json::json!({
+            "event": "clock",
+            "playbackUs": playback_us,
+            "callbackFrames": frames,
+        })),
+        LogEvent::Mixed {
+            id,
+            request,
+            queue_us,
+            playback_us,
+            ipc_ms,
+            active,
+        } => event_line(&serde_json::json!({
+            "event": "mixed",
+            "voice": id,
+            "request": request,
+            "queueUs": queue_us,
+            "playbackUs": playback_us,
+            "ipcMs": ipc_ms,
+            "active": active,
+        })),
+        LogEvent::Finished {
+            id,
+            request,
+            age_ms,
+        } => event_line(&serde_json::json!({
+            "event": "finished",
+            "voice": id,
+            "request": request,
+            "ageMs": age_ms,
+        })),
+        LogEvent::Skip { id, request } => event_line(&serde_json::json!({
+            "event": "skip-full",
+            "voice": id,
+            "request": request,
+        })),
+        LogEvent::Queued {
+            voice,
+            request,
+            gain,
+            ipc_ms,
+        } => event_line(&serde_json::json!({
+            "event": "queued",
+            "voice": voice,
+            "request": request,
+            "gain": gain,
+            "ipcMs": ipc_ms,
+        })),
+        LogEvent::Stream(message) => event_line(&serde_json::json!({
+            "event": "stream-error",
+            "message": message,
+        })),
+    }
+}
+
+fn event_line(extra: &serde_json::Value) -> String {
+    let mut value = serde_json::json!({
+        "t": iso_now(),
+        "path": "native",
+        "source": "mixer",
+    });
+    if let (Some(target), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
+        for (key, item) in extra {
+            target.insert(key.clone(), item.clone());
+        }
+    }
+    value.to_string()
 }
 
 #[tauri::command]
@@ -179,9 +345,13 @@ fn with_engine<T>(
         .inner
         .lock()
         .map_err(|_| "按键音状态锁定失败".to_owned())?;
+    if state.broken.swap(false, Ordering::Relaxed) {
+        // The output stream died (device unplugged or switched); rebuild it here.
+        *guard = None;
+    }
     if guard.is_none() {
-        let path = log_path(app)?;
-        *guard = Some(Engine::start(path)?);
+        let logs = log_channel(app);
+        *guard = Some(Engine::start(logs, Arc::clone(&state.broken))?);
     }
     let Some(engine) = guard.as_ref() else {
         return Err("按键音输出没有就绪".to_owned());
@@ -190,7 +360,7 @@ fn with_engine<T>(
 }
 
 impl Engine {
-    fn start(path: PathBuf) -> Result<Self, String> {
+    fn start(logs: &'static SyncSender<LogEvent>, broken: Arc<AtomicBool>) -> Result<Self, String> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -212,20 +382,14 @@ impl Engine {
             return Err("输出设备的格式无效".to_owned());
         }
 
-        let (log_tx, log_rx) = sync_channel(256);
-        let log_file = path.clone();
-        thread::Builder::new()
-            .name("typelet-key-log".to_owned())
-            .spawn(move || log_loop(log_file, log_rx))
-            .map_err(|error| format!("按键音日志线程没有启动：{error}"))?;
-
         let opened = match open_output(
             &device,
             config,
             format,
             usize::from(channels),
             rate,
-            &log_tx,
+            logs,
+            &broken,
         ) {
             Ok(opened) => (opened, false),
             Err(first) => {
@@ -237,7 +401,8 @@ impl Engine {
                     format,
                     usize::from(channels),
                     rate,
-                    &log_tx,
+                    logs,
+                    &broken,
                 ) {
                     Ok(opened) => (opened, true),
                     Err(second) => {
@@ -248,35 +413,31 @@ impl Engine {
                 }
             }
         };
-        drop(log_tx);
         let ((commands, stream), used_default) = opened;
         let actual = stream.buffer_size().unwrap_or(requested);
         stream
             .play()
             .map_err(|error| format!("按键音输出无法开始：{error}"))?;
-        let _ = write_event(
-            &path,
-            &serde_json::json!({
-                "event": "device",
-                "host": host.id().name(),
-                "device": device_name,
-                "rate": rate,
-                "channels": channels,
-                "format": format.to_string(),
-                "requestedFrames": requested,
-                "bufferFrames": actual,
-                "bufferFallback": used_default,
-            }),
-        );
+        let _ = logs.try_send(LogEvent::Line(event_line(&serde_json::json!({
+            "event": "device",
+            "host": host.id().name(),
+            "device": device_name,
+            "rate": rate,
+            "channels": channels,
+            "format": format.to_string(),
+            "requestedFrames": requested,
+            "bufferFrames": actual,
+            "bufferFallback": used_default,
+        }))));
 
         Ok(Self {
             commands,
+            logs,
             clip: Mutex::new(None),
             next_voice: AtomicU64::new(0),
             rate,
             channels,
             buffer_frames: actual,
-            path,
             _stream: stream,
         })
     }
@@ -289,17 +450,14 @@ impl Engine {
             .map_err(|_| "按键音片段锁定失败".to_owned())?;
         *clip = Some(Arc::clone(&prepared.samples));
         drop(clip);
-        let _ = write_event(
-            &self.path,
-            &serde_json::json!({
-                "event": "loaded",
-                "frames": prepared.frames,
-                "rate": prepared.source_rate,
-                "deviceRate": self.rate,
-                "makeup": prepared.makeup,
-                "bufferFrames": self.buffer_frames,
-            }),
-        );
+        let _ = self.logs.try_send(LogEvent::Line(event_line(&serde_json::json!({
+            "event": "loaded",
+            "frames": prepared.frames,
+            "rate": prepared.source_rate,
+            "deviceRate": self.rate,
+            "makeup": prepared.makeup,
+            "bufferFrames": self.buffer_frames,
+        }))));
         Ok(LoadReport {
             frames: prepared.frames,
             rate: prepared.source_rate,
@@ -339,16 +497,12 @@ impl Engine {
             Err(TrySendError::Full(_)) => return Err("queue-full".to_owned()),
             Err(TrySendError::Disconnected(_)) => return Err("mixer-closed".to_owned()),
         }
-        let _ = write_event(
-            &self.path,
-            &serde_json::json!({
-                "event": "queued",
-                "voice": id,
-                "request": request,
-                "gain": gain,
-                "ipcMs": ipc_ms,
-            }),
-        );
+        let _ = self.logs.try_send(LogEvent::Queued {
+            voice: id,
+            request,
+            gain,
+            ipc_ms,
+        });
         Ok(PlayReport { voice: id })
     }
 }
@@ -370,12 +524,13 @@ fn open_output(
     channels: usize,
     rate: u32,
     logs: &SyncSender<LogEvent>,
+    broken: &Arc<AtomicBool>,
 ) -> Result<(SyncSender<PlayCommand>, cpal::Stream), String> {
     match format {
-        SampleFormat::F32 => build_stream::<f32>(device, config, channels, rate, logs),
-        SampleFormat::I16 => build_stream::<i16>(device, config, channels, rate, logs),
-        SampleFormat::U16 => build_stream::<u16>(device, config, channels, rate, logs),
-        SampleFormat::F64 => build_stream::<f64>(device, config, channels, rate, logs),
+        SampleFormat::F32 => build_stream::<f32>(device, config, channels, rate, logs, broken),
+        SampleFormat::I16 => build_stream::<i16>(device, config, channels, rate, logs, broken),
+        SampleFormat::U16 => build_stream::<u16>(device, config, channels, rate, logs, broken),
+        SampleFormat::F64 => build_stream::<f64>(device, config, channels, rate, logs, broken),
         other => Err(format!("不支持的输出格式 {other}")),
     }
 }
@@ -386,6 +541,7 @@ fn build_stream<T>(
     channels: usize,
     _rate: u32,
     logs: &SyncSender<LogEvent>,
+    broken: &Arc<AtomicBool>,
 ) -> Result<(SyncSender<PlayCommand>, cpal::Stream), String>
 where
     T: SizedSample + FromSample<f32>,
@@ -400,11 +556,15 @@ where
         clock_logged: false,
     };
     let error_logs = logs.clone();
+    let error_broken = Arc::clone(broken);
     let stream = device
         .build_output_stream(
             config,
             move |data: &mut [T], info| callback.render(data, output_delay_us(info)),
             move |error| {
+                // Mark the engine for a rebuild on the next key; without this a
+                // dead stream would keep the cached engine silent forever.
+                error_broken.store(true, Ordering::Relaxed);
                 let _ = error_logs.try_send(LogEvent::Stream(error.to_string()));
             },
             Some(Duration::from_secs(2)),
@@ -550,74 +710,6 @@ fn elapsed_us(since: Instant) -> u64 {
 
 fn elapsed_ms(since: Instant) -> u64 {
     u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
-
-fn log_loop(path: PathBuf, rx: Receiver<LogEvent>) {
-    while let Ok(event) = rx.recv() {
-        let value = match event {
-            LogEvent::Clock {
-                playback_us,
-                frames,
-            } => serde_json::json!({
-                "event": "clock",
-                "playbackUs": playback_us,
-                "callbackFrames": frames,
-            }),
-            LogEvent::Mixed {
-                id,
-                request,
-                queue_us,
-                playback_us,
-                ipc_ms,
-                active,
-            } => serde_json::json!({
-                "event": "mixed",
-                "voice": id,
-                "request": request,
-                "queueUs": queue_us,
-                "playbackUs": playback_us,
-                "ipcMs": ipc_ms,
-                "active": active,
-            }),
-            LogEvent::Finished {
-                id,
-                request,
-                age_ms,
-            } => serde_json::json!({
-                "event": "finished",
-                "voice": id,
-                "request": request,
-                "ageMs": age_ms,
-            }),
-            LogEvent::Skip { id, request } => serde_json::json!({
-                "event": "skip-full",
-                "voice": id,
-                "request": request,
-            }),
-            LogEvent::Stream(message) => serde_json::json!({
-                "event": "stream-error",
-                "message": message,
-            }),
-        };
-        let _ = write_event(&path, &value);
-    }
-}
-
-fn write_event(path: &Path, extra: &serde_json::Value) -> Result<(), String> {
-    let mut value = serde_json::json!({
-        "t": iso_now(),
-        "path": "native",
-        "source": "mixer",
-    });
-    let Some(target) = value.as_object_mut() else {
-        return Err("按键音日志格式无效".to_owned());
-    };
-    if let Some(extra) = extra.as_object() {
-        for (key, item) in extra {
-            target.insert(key.clone(), item.clone());
-        }
-    }
-    append_log(path, &value.to_string())
 }
 
 fn iso_now() -> String {
@@ -852,6 +944,7 @@ fn resample(input: &[f32], from: u32, to: u32) -> Result<Vec<f32>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn quiet_recording_is_normalized_to_about_minus_one_db() {
