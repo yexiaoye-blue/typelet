@@ -1199,6 +1199,10 @@
   }
 
   async function restart(next = false) {
+    if (next && itemReachedEnd && !stats.done) {
+      // An item left through Enter-with-errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
     const keepChapterClock = !(next && snapshot.isChapterLastItem);
     invalidateCompletion();
     requestId += 1;
@@ -1228,9 +1232,14 @@
   }
 
   async function selectPracticeItem(itemIndex: number, allowNextAfterLeft: boolean) {
+    if (!allowNextAfterLeft && itemReachedEnd && !stats.done) {
+      // An item skipped with errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
     invalidateCompletion();
     requestId += 1;
-    resetPracticeClock();
+    // The chapter clock keeps running across item navigation; only the per-item origin moves.
+    itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
     composing = false;
     compositionText = '';
     draft = '';
