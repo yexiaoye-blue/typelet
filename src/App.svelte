@@ -1194,6 +1194,10 @@
       const reachedEnd = snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length;
       if (chapterPaused || !stats.done && !reachedEnd) return;
       if (snapshot.isLastItem) {
+        if (!stats.done) {
+          // Enter-with-errors at the book end still counts this item in the summary.
+          rememberCompletedItem(snapshot);
+        }
         practicePhase = 'paused';
         chapterPaused = true;
         return;
