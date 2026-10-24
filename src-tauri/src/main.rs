@@ -401,7 +401,12 @@ fn load_stored_state(data_dir: &Path, storage_path: &Path) -> StoredContentState
                 .duration_since(UNIX_EPOCH)
                 .map(|duration| duration.as_secs())
                 .unwrap_or(0);
-            let backup = data_dir.join(format!("content.json.corrupt-{stamp}"));
+            let mut backup = data_dir.join(format!("content.json.corrupt-{stamp}"));
+            let mut suffix = 0u32;
+            while backup.exists() {
+                suffix += 1;
+                backup = data_dir.join(format!("content.json.corrupt-{stamp}-{suffix}"));
+            }
             if let Err(rename_error) = fs::rename(storage_path, &backup) {
                 eprintln!(
                     "content.json 无法解析（{error}），且备份到 {} 失败：{rename_error}",
