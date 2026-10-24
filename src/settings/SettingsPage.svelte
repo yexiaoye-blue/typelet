@@ -167,6 +167,10 @@
     loadFonts: any;
     appVersion: any;
   } = $props();
+
+  function fontOptionId(index: number) {
+    return 'font-option-' + index;
+  }
 </script>
 
     <main class="settings-page" bind:this={settingsPage}>
@@ -394,6 +398,7 @@
               aria-expanded={fontMenuOpen}
               aria-controls="font-menu"
               aria-autocomplete="list"
+              aria-activedescendant={fontMenuOpen && fontHighlight >= 0 ? fontOptionId(fontHighlight) : undefined}
               placeholder={fontMenuOpen ? fontLabel(fontDraft) : t.fontSearch}
               value={fontMenuOpen ? fontQuery : fontLabel(fontDraft)}
               onfocus={openFontMenu}
@@ -405,7 +410,7 @@
           {#if fontMenuOpen}
             <div id="font-menu" class="font-menu" role="listbox" aria-label={t.font} style:max-height={fontMenuMaxHeight + 'px'}>
               {#each fontChoiceList as choice, index (choice.value)}
-                <button type="button" role="option" aria-selected={choice.value === fontDraft} class:active={index === fontHighlight} onmouseenter={() => fontHighlight = index} onclick={() => chooseFont(choice.value)}>{choice.label}</button>
+                <button type="button" id={fontOptionId(index)} role="option" aria-selected={choice.value === fontDraft} class:active={index === fontHighlight} onmouseenter={() => fontHighlight = index} onclick={() => chooseFont(choice.value)}>{choice.label}</button>
               {:else}
                 <p class="font-empty">{t.fontEmpty}</p>
               {/each}
