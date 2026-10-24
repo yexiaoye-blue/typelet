@@ -394,7 +394,7 @@
 
   function commitChapterLength(input: HTMLInputElement) {
     const parsed = Number(input.value.trim());
-    if (!Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
+    if (!input.value.trim() || !Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
       input.value = String(effectiveChapterLength);
       return;
     }
