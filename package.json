@@ -7,7 +7,7 @@
     "dev": "tauri dev",
     "web:dev": "vite --host 127.0.0.1 --port 6670 --strictPort",
     "build": "tsc --noEmit && vite build",
-    "test": "cargo test --manifest-path src-tauri/typing-core/Cargo.toml && tsx --test tests/typing.test.ts tests/key-sounds.test.ts tests/fonts.test.ts",
+    "test": "cargo test --manifest-path src-tauri/typing-core/Cargo.toml && tsx --test tests/typing.test.ts tests/key-sounds.test.ts tests/fonts.test.ts tests/deferred-focus.test.ts",
     "tauri:build": "tauri build"
   },
   "dependencies": {

@@ -4,7 +4,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { open } from '@tauri-apps/plugin-dialog';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import {
     characters,
     limitPracticeInput,
@@ -35,6 +35,7 @@
     loadAutoAdvanceWords,
     loadChapterLength,
     loadLocalePreference,
+    loadMiniWindow,
     loadPracticeOrder,
     loadPronunciationPreference,
     loadThemePreference,
@@ -47,6 +48,8 @@
   import PracticePage from './practice/PracticePage.svelte';
   import SettingsPage from './settings/SettingsPage.svelte';
   import TitleBar from './shell/TitleBar.svelte';
+  import MiniToolbar from './shell/MiniToolbar.svelte';
+  import { createDeferredFocus } from './deferred-focus';
 
   type Statistics = PracticeSnapshot['stats'];
   type AgentId = 'codex' | 'cursor' | 'dsh';
@@ -57,6 +60,8 @@
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
+  const wordMiniHeight = 228;
+  const sentenceMiniHeight = 280;
   type ImportResult = { report: { title: string; count: number; duplicateCount: number; firstItem: string | null }; catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot };
   setPreviewLayout(loadChapterLength(), loadPracticeOrder());
   const emptySnapshot = previewSnapshot();
@@ -72,6 +77,19 @@
   let appVersion = $state(packagedVersion);
   let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   let view = $state<'practice' | 'settings'>('practice');
+  let miniWindow = $state(loadMiniWindow());
+  let savedWindowSize: { width: number; height: number } | null = null;
+  let windowModeQueue: Promise<void> = Promise.resolve();
+  let windowSizeGeneration = 0;
+  let practiceReady = false;
+  let focusActive = true;
+  const practiceFocus = createDeferredFocus(() => {
+    if (!focusActive || view !== 'practice' || !document.hasFocus()) return;
+    if (input && document.activeElement !== input) input.focus({ preventScroll: true });
+  });
+  const nativeFocus = createDeferredFocus(() => {
+    void restoreNativeWindowFocus();
+  });
   let snapshot = $state<PracticeSnapshot>(emptySnapshot);
   let libraries = $derived(snapshot.mode === 'sentence' ? catalog.articles : catalog.wordBooks);
   let catalog = $state<ContentCatalogSnapshot>(previewCatalog());
@@ -139,6 +157,7 @@
   let locale = $derived<Locale>(localePreference === 'system' ? systemLocale : localePreference);
   let resolvedTheme = $derived<Theme>(themePreference === 'system' ? systemTheme : themePreference);
   let t = $derived(locale === 'zh' ? zh : en);
+  let miniHeight = $derived(snapshot.mode === 'sentence' ? sentenceMiniHeight : wordMiniHeight);
   let builtinLibraries = $derived(libraries.filter((item) => !item.removable));
   let importedLibraries = $derived(libraries.filter((item) => item.removable));
   let target = $derived(snapshot.target);
@@ -198,7 +217,7 @@
     document.documentElement.dataset.theme = resolvedTheme;
   });
   $effect(() => {
-    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
+    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText, miniWindow);
   });
   $effect(() => {
     if (view === 'settings' && !agentsLoaded) void loadAgents();
@@ -243,6 +262,8 @@
     syncSystemLocale();
 
     const leaveApp = () => {
+      practiceFocus.cancel();
+      nativeFocus.cancel();
       focused = false;
       pausePractice();
     };
@@ -290,6 +311,12 @@
       beginPractice();
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.code === 'KeyM' && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && !event.repeat && !event.isComposing) {
+        event.preventDefault();
+        void toggleMiniWindow();
+        return;
+      }
       if (handlePracticeNavigationKey(event)) return;
       if (event.code === 'Comma' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && !event.repeat) {
         event.preventDefault();
@@ -323,7 +350,11 @@
     const fontLayoutChanged = () => { void updateCaret(); };
     resizeObserver = new ResizeObserver(fontLayoutChanged);
     document.fonts.addEventListener('loadingdone', fontLayoutChanged);
-    void loadPractice().then(() => tick()).then(() => focusInput());
+    void loadPractice().then(() => tick()).then(() => {
+      practiceReady = true;
+      if (miniWindow) void scheduleWindowMode(true, miniHeight);
+      focusInput();
+    });
 
     if (appWindow) {
       const pinRead = pinGeneration;
@@ -344,6 +375,9 @@
 
     timer = setInterval(updateClock, 200);
     return () => {
+      focusActive = false;
+      practiceFocus.cancel();
+      nativeFocus.cancel();
       if (timer) clearInterval(timer);
       window.removeEventListener('blur', leaveApp);
       window.removeEventListener('pointerup', releaseSurface);
@@ -765,7 +799,18 @@
   }
 
   function focusInput() {
-    input?.focus({ preventScroll: true });
+    practiceFocus.request();
+  }
+
+  async function restoreNativeWindowFocus() {
+    if (!focusActive || !appWindow || document.hidden) return;
+    try {
+      if (!await appWindow.isFocused() && focusActive && !document.hidden) {
+        await appWindow.setFocus();
+      }
+    } catch (error) {
+      console.warn('Could not restore Typelet window focus:', error);
+    }
   }
 
   function dismissChapterPicker() {
@@ -787,7 +832,6 @@
     // Keep the caret in the capture field without cancelling the button click.
     // WebKitGTK drops the click when mousedown is cancelled, so only move focus afterward.
     if (event.type === 'mousedown') return;
-    if (document.activeElement === control) control.blur();
     focusInput();
   }
 
@@ -853,6 +897,7 @@
   }
 
   function applySnapshot(next: PracticeSnapshot, resetInput: boolean) {
+    const modeChanged = practiceReady && miniWindow && next.mode !== snapshot.mode;
     snapshot = next;
     if (resetInput) {
       draft = next.practice.text;
@@ -864,6 +909,7 @@
     handleItemCompletion(next);
     speakVisibleWord(next);
     if (!isTauri) persistWebProgress(next);
+    if (modeChanged) void scheduleWindowMode(true, next.mode === 'sentence' ? sentenceMiniHeight : wordMiniHeight);
   }
 
   function syncChapterSession(next: PracticeSnapshot) {
@@ -1052,8 +1098,14 @@
     const origin = event.target as HTMLElement | null;
     const interactive = origin?.closest('button, select, a, input, textarea, summary, [role="button"]');
     surfacePressed = view === 'practice' && !interactive;
-    // A click inside the window must keep Typelet above the window underneath.
-    void appWindow?.setFocus();
+    // Native and input focus are restored after click, never during pointerdown.
+  }
+
+  function restoreSurfaceWindowFocus(event: MouseEvent) {
+    const origin = event.target as HTMLElement | null;
+    // Do not undo intentional minimize/close or interfere with window dragging.
+    if (origin?.closest('.window-actions, .mini-toolbar')) return;
+    nativeFocus.request();
   }
 
   function handleFocus() {
@@ -1097,7 +1149,7 @@
     const stage = textDisplay.closest('.word-stage') as HTMLElement | null;
     const available = stage?.clientWidth ?? 0;
     if (available < 40) return;
-    const maxSize = 46;
+    const maxSize = miniWindow ? 42 : 46;
     const minSize = 16;
     const previousWidth = textDisplay.style.width;
     const previousMaxWidth = textDisplay.style.maxWidth;
@@ -1470,6 +1522,65 @@
     importError = '';
   }
 
+  function persistMiniWindow(enabled: boolean) {
+    try { localStorage.setItem('typelet.window.mini', String(enabled)); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function clampWindow(value: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, Math.round(value)));
+  }
+
+  async function logicalWindowSize() {
+    if (!appWindow) return null;
+    const [size, factor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
+    const logical = size.toLogical(factor);
+    return { width: logical.width, height: logical.height };
+  }
+
+  function scheduleWindowMode(enabled: boolean, height: number) {
+    const generation = ++windowSizeGeneration;
+    const run = windowModeQueue.catch(() => undefined).then(() => applyWindowMode(enabled, height, generation));
+    windowModeQueue = run;
+    return run;
+  }
+
+  async function applyWindowMode(enabled: boolean, height: number, generation: number) {
+    if (!appWindow || generation !== windowSizeGeneration) return;
+    try {
+      if (enabled) {
+        if (!savedWindowSize) {
+          const current = await logicalWindowSize();
+          if (generation !== windowSizeGeneration) return;
+          if (current) savedWindowSize = current;
+        }
+        const width = clampWindow(savedWindowSize?.width ?? 380, 300, 460);
+        // The normal window cannot shrink below 450 until this minimum is relaxed.
+        await appWindow.setSizeConstraints({ minWidth: 300, minHeight: 220, maxWidth: 460, maxHeight: 420 });
+        if (generation !== windowSizeGeneration) return;
+        await appWindow.setSize(new LogicalSize(width, height));
+        return;
+      }
+      const restore = savedWindowSize ?? { width: 380, height: 450 };
+      savedWindowSize = null;
+      const width = clampWindow(restore.width, 340, 460);
+      const nextHeight = clampWindow(restore.height, 450, 650);
+      await appWindow.setSizeConstraints({ minWidth: 300, minHeight: 220, maxWidth: 460, maxHeight: 650 });
+      if (generation !== windowSizeGeneration) return;
+      await appWindow.setSize(new LogicalSize(width, nextHeight));
+      if (generation !== windowSizeGeneration) return;
+      await appWindow.setSizeConstraints({ minWidth: 340, minHeight: 450, maxWidth: 460, maxHeight: 650 });
+    } catch {
+      // The compact layout still applies when the desktop window cannot be resized.
+    }
+  }
+
+  async function leaveMiniWindow() {
+    if (!miniWindow) return;
+    miniWindow = false;
+    persistMiniWindow(false);
+    await scheduleWindowMode(false, 0);
+  }
+
   async function togglePinned() {
     if (!appWindow) return;
     const next = !pinned;
@@ -1491,12 +1602,14 @@
   async function close() { await appWindow?.close(); }
 
   async function dragWindow(event: MouseEvent) {
+    if (event.button !== 0) return;
     const targetElement = event.target as HTMLElement | null;
     if (targetElement?.closest('button, select, a, input, textarea')) return;
     await appWindow?.startDragging();
   }
 
   async function openSettings() {
+    if (miniWindow) await leaveMiniWindow();
     focused = false;
     libraryOpen = false;
     view = 'settings';
@@ -1518,6 +1631,23 @@
     focusInput();
   }
 
+  async function toggleMiniWindow() {
+    if (miniWindow) {
+      await leaveMiniWindow();
+    } else {
+      if (view === 'settings') await closeSettings();
+      miniWindow = true;
+      persistMiniWindow(true);
+      await scheduleWindowMode(true, miniHeight);
+    }
+    await tick();
+    if (view === 'practice') focusInput();
+  }
+
+  function exitMiniWindow() {
+    if (miniWindow) void toggleMiniWindow();
+  }
+
   async function navigateBack() {
     if (selectedAgent) {
       closeAgentDetail();
@@ -1535,7 +1665,11 @@
   <title>{t.brand} · {t.subtitle}</title>
 </svelte:head>
 
-<section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
+<section class="widget" class:tauri={isTauri} class:mini-window={miniWindow} role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} style:--mini-height="{miniHeight}px" onpointerdowncapture={markSurfacePress} onclickcapture={restoreSurfaceWindowFocus}>
+  {#if miniWindow}
+    <MiniToolbar {t} {isTauri} {pinned} {dragWindow} {togglePinned} {minimize} {close} restoreWindow={exitMiniWindow} />
+  {/if}
+  {#if !miniWindow}
   <TitleBar
     {dragWindow}
     {t}
@@ -1543,12 +1677,14 @@
     {view}
     {navigateBack}
     {openSettings}
+    {toggleMiniWindow}
     {isTauri}
     {pinned}
     {togglePinned}
     {minimize}
     {close}
   />
+  {/if}
 
   {#if view === 'settings'}
     <SettingsPage
@@ -1636,6 +1772,8 @@
     />
   {:else}
     <PracticePage
+      {miniWindow}
+      {exitMiniWindow}
       {restorePracticeTypingFocus}
       {chapterPaused}
       {t}
