@@ -4,7 +4,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { open } from '@tauri-apps/plugin-dialog';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import {
     characters,
     limitPracticeInput,
@@ -35,6 +35,7 @@
     loadAutoAdvanceWords,
     loadChapterLength,
     loadLocalePreference,
+    loadMiniWindow,
     loadPracticeOrder,
     loadPronunciationPreference,
     loadThemePreference,
@@ -47,6 +48,8 @@
   import PracticePage from './practice/PracticePage.svelte';
   import SettingsPage from './settings/SettingsPage.svelte';
   import TitleBar from './shell/TitleBar.svelte';
+  import MiniToolbar from './shell/MiniToolbar.svelte';
+  import { createDeferredFocus } from './deferred-focus';
 
   type Statistics = PracticeSnapshot['stats'];
   type AgentId = 'codex' | 'cursor' | 'dsh';
@@ -57,6 +60,8 @@
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
+  const wordMiniHeight = 228;
+  const sentenceMiniHeight = 280;
   type ImportResult = { report: { title: string; count: number; duplicateCount: number; firstItem: string | null }; catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot };
   setPreviewLayout(loadChapterLength(), loadPracticeOrder());
   const emptySnapshot = previewSnapshot();
@@ -72,6 +77,19 @@
   let appVersion = $state(packagedVersion);
   let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   let view = $state<'practice' | 'settings'>('practice');
+  let miniWindow = $state(loadMiniWindow());
+  let savedWindowSize: { width: number; height: number } | null = null;
+  let windowModeQueue: Promise<void> = Promise.resolve();
+  let windowSizeGeneration = 0;
+  let practiceReady = false;
+  let focusActive = true;
+  const practiceFocus = createDeferredFocus(() => {
+    if (!focusActive || view !== 'practice' || !document.hasFocus()) return;
+    if (input && document.activeElement !== input) input.focus({ preventScroll: true });
+  });
+  const nativeFocus = createDeferredFocus(() => {
+    void restoreNativeWindowFocus();
+  });
   let snapshot = $state<PracticeSnapshot>(emptySnapshot);
   let libraries = $derived(snapshot.mode === 'sentence' ? catalog.articles : catalog.wordBooks);
   let catalog = $state<ContentCatalogSnapshot>(previewCatalog());
@@ -139,6 +157,7 @@
   let locale = $derived<Locale>(localePreference === 'system' ? systemLocale : localePreference);
   let resolvedTheme = $derived<Theme>(themePreference === 'system' ? systemTheme : themePreference);
   let t = $derived(locale === 'zh' ? zh : en);
+  let miniHeight = $derived(snapshot.mode === 'sentence' ? sentenceMiniHeight : wordMiniHeight);
   let builtinLibraries = $derived(libraries.filter((item) => !item.removable));
   let importedLibraries = $derived(libraries.filter((item) => item.removable));
   let target = $derived(snapshot.target);
@@ -190,6 +209,7 @@
   let effectiveChapterLength = $derived(Math.min(chapterLengthMax, Math.max(chapterLengthMin, chapterLength)));
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
+  let celebrationBurst: ReturnType<typeof confetti.create> | undefined;
 
   $effect(() => {
     if (typeof document === 'undefined') return;
@@ -197,7 +217,7 @@
     document.documentElement.dataset.theme = resolvedTheme;
   });
   $effect(() => {
-    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
+    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText, miniWindow);
   });
   $effect(() => {
     if (view === 'settings' && !agentsLoaded) void loadAgents();
@@ -213,9 +233,10 @@
     if (!canvas || celebratedChapter === key) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     celebratedChapter = key;
-    const burst = confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    // The canvas lives for the whole practice view; one burst instance per element.
+    celebrationBurst ??= confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
   });
 
   function handlePracticeNavigationKey(event: KeyboardEvent) {
@@ -241,6 +262,8 @@
     syncSystemLocale();
 
     const leaveApp = () => {
+      practiceFocus.cancel();
+      nativeFocus.cancel();
       focused = false;
       pausePractice();
     };
@@ -265,6 +288,9 @@
       if (view !== 'practice') return;
       if (chapterPaused) {
         if (event.key === 'Enter' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          // A focused chapter button keeps its own Enter activation.
+          const target = event.target as HTMLElement | null;
+          if (target?.closest('.practice-page button')) return;
           event.preventDefault();
           void continueAndStart();
         }
@@ -285,6 +311,12 @@
       beginPractice();
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (event.code === 'KeyM' && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && !event.repeat && !event.isComposing) {
+        event.preventDefault();
+        void toggleMiniWindow();
+        return;
+      }
       if (handlePracticeNavigationKey(event)) return;
       if (event.code === 'Comma' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && !event.repeat) {
         event.preventDefault();
@@ -293,6 +325,9 @@
       }
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
+        // Escape inside a text field must not throw away unsaved edits by leaving settings.
+        const origin = event.target as HTMLElement | null;
+        if (origin?.closest('input, textarea, select, [role="combobox"], [role="listbox"]')) return;
         event.preventDefault();
         void navigateBack();
         return;
@@ -315,7 +350,11 @@
     const fontLayoutChanged = () => { void updateCaret(); };
     resizeObserver = new ResizeObserver(fontLayoutChanged);
     document.fonts.addEventListener('loadingdone', fontLayoutChanged);
-    void loadPractice().then(() => tick()).then(() => focusInput());
+    void loadPractice().then(() => tick()).then(() => {
+      practiceReady = true;
+      if (miniWindow) void scheduleWindowMode(true, miniHeight);
+      focusInput();
+    });
 
     if (appWindow) {
       const pinRead = pinGeneration;
@@ -336,6 +375,9 @@
 
     timer = setInterval(updateClock, 200);
     return () => {
+      focusActive = false;
+      practiceFocus.cancel();
+      nativeFocus.cancel();
       if (timer) clearInterval(timer);
       window.removeEventListener('blur', leaveApp);
       window.removeEventListener('pointerup', releaseSurface);
@@ -388,7 +430,7 @@
 
   function commitChapterLength(input: HTMLInputElement) {
     const parsed = Number(input.value.trim());
-    if (!Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
+    if (!input.value.trim() || !Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
       input.value = String(effectiveChapterLength);
       return;
     }
@@ -629,6 +671,8 @@
       event.preventDefault();
       chooseFont(fontChoiceList[fontHighlight].value);
     } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
       closeFontMenu();
     }
   }
@@ -755,7 +799,18 @@
   }
 
   function focusInput() {
-    input?.focus({ preventScroll: true });
+    practiceFocus.request();
+  }
+
+  async function restoreNativeWindowFocus() {
+    if (!focusActive || !appWindow || document.hidden) return;
+    try {
+      if (!await appWindow.isFocused() && focusActive && !document.hidden) {
+        await appWindow.setFocus();
+      }
+    } catch (error) {
+      console.warn('Could not restore Typelet window focus:', error);
+    }
   }
 
   function dismissChapterPicker() {
@@ -777,7 +832,6 @@
     // Keep the caret in the capture field without cancelling the button click.
     // WebKitGTK drops the click when mousedown is cancelled, so only move focus afterward.
     if (event.type === 'mousedown') return;
-    if (document.activeElement === control) control.blur();
     focusInput();
   }
 
@@ -843,6 +897,7 @@
   }
 
   function applySnapshot(next: PracticeSnapshot, resetInput: boolean) {
+    const modeChanged = practiceReady && miniWindow && next.mode !== snapshot.mode;
     snapshot = next;
     if (resetInput) {
       draft = next.practice.text;
@@ -854,6 +909,7 @@
     handleItemCompletion(next);
     speakVisibleWord(next);
     if (!isTauri) persistWebProgress(next);
+    if (modeChanged) void scheduleWindowMode(true, next.mode === 'sentence' ? sentenceMiniHeight : wordMiniHeight);
   }
 
   function syncChapterSession(next: PracticeSnapshot) {
@@ -1042,8 +1098,14 @@
     const origin = event.target as HTMLElement | null;
     const interactive = origin?.closest('button, select, a, input, textarea, summary, [role="button"]');
     surfacePressed = view === 'practice' && !interactive;
-    // A click inside the window must keep Typelet above the window underneath.
-    void appWindow?.setFocus();
+    // Native and input focus are restored after click, never during pointerdown.
+  }
+
+  function restoreSurfaceWindowFocus(event: MouseEvent) {
+    const origin = event.target as HTMLElement | null;
+    // Do not undo intentional minimize/close or interfere with window dragging.
+    if (origin?.closest('.window-actions, .mini-toolbar')) return;
+    nativeFocus.request();
   }
 
   function handleFocus() {
@@ -1087,7 +1149,7 @@
     const stage = textDisplay.closest('.word-stage') as HTMLElement | null;
     const available = stage?.clientWidth ?? 0;
     if (available < 40) return;
-    const maxSize = 46;
+    const maxSize = miniWindow ? 42 : 46;
     const minSize = 16;
     const previousWidth = textDisplay.style.width;
     const previousMaxWidth = textDisplay.style.maxWidth;
@@ -1184,6 +1246,11 @@
       const reachedEnd = snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length;
       if (chapterPaused || !stats.done && !reachedEnd) return;
       if (snapshot.isLastItem) {
+        if (!stats.done) {
+          // Enter-with-errors at the book end still counts this item in the summary.
+          rememberCompletedItem(snapshot);
+        }
+        practicePhase = 'paused';
         chapterPaused = true;
         return;
       }
@@ -1195,6 +1262,10 @@
   }
 
   async function restart(next = false) {
+    if (next && itemReachedEnd && !stats.done) {
+      // An item left through Enter-with-errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
     const keepChapterClock = !(next && snapshot.isChapterLastItem);
     invalidateCompletion();
     requestId += 1;
@@ -1224,9 +1295,14 @@
   }
 
   async function selectPracticeItem(itemIndex: number, allowNextAfterLeft: boolean) {
+    if (!allowNextAfterLeft && itemReachedEnd && !stats.done) {
+      // An item skipped with errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
     invalidateCompletion();
     requestId += 1;
-    resetPracticeClock();
+    // The chapter clock keeps running across item navigation; only the per-item origin moves.
+    itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
     composing = false;
     compositionText = '';
     draft = '';
@@ -1446,6 +1522,65 @@
     importError = '';
   }
 
+  function persistMiniWindow(enabled: boolean) {
+    try { localStorage.setItem('typelet.window.mini', String(enabled)); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function clampWindow(value: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, Math.round(value)));
+  }
+
+  async function logicalWindowSize() {
+    if (!appWindow) return null;
+    const [size, factor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
+    const logical = size.toLogical(factor);
+    return { width: logical.width, height: logical.height };
+  }
+
+  function scheduleWindowMode(enabled: boolean, height: number) {
+    const generation = ++windowSizeGeneration;
+    const run = windowModeQueue.catch(() => undefined).then(() => applyWindowMode(enabled, height, generation));
+    windowModeQueue = run;
+    return run;
+  }
+
+  async function applyWindowMode(enabled: boolean, height: number, generation: number) {
+    if (!appWindow || generation !== windowSizeGeneration) return;
+    try {
+      if (enabled) {
+        if (!savedWindowSize) {
+          const current = await logicalWindowSize();
+          if (generation !== windowSizeGeneration) return;
+          if (current) savedWindowSize = current;
+        }
+        const width = clampWindow(savedWindowSize?.width ?? 380, 300, 460);
+        // The normal window cannot shrink below 450 until this minimum is relaxed.
+        await appWindow.setSizeConstraints({ minWidth: 300, minHeight: 220, maxWidth: 460, maxHeight: 420 });
+        if (generation !== windowSizeGeneration) return;
+        await appWindow.setSize(new LogicalSize(width, height));
+        return;
+      }
+      const restore = savedWindowSize ?? { width: 380, height: 450 };
+      savedWindowSize = null;
+      const width = clampWindow(restore.width, 340, 460);
+      const nextHeight = clampWindow(restore.height, 450, 650);
+      await appWindow.setSizeConstraints({ minWidth: 300, minHeight: 220, maxWidth: 460, maxHeight: 650 });
+      if (generation !== windowSizeGeneration) return;
+      await appWindow.setSize(new LogicalSize(width, nextHeight));
+      if (generation !== windowSizeGeneration) return;
+      await appWindow.setSizeConstraints({ minWidth: 340, minHeight: 450, maxWidth: 460, maxHeight: 650 });
+    } catch {
+      // The compact layout still applies when the desktop window cannot be resized.
+    }
+  }
+
+  async function leaveMiniWindow() {
+    if (!miniWindow) return;
+    miniWindow = false;
+    persistMiniWindow(false);
+    await scheduleWindowMode(false, 0);
+  }
+
   async function togglePinned() {
     if (!appWindow) return;
     const next = !pinned;
@@ -1467,12 +1602,14 @@
   async function close() { await appWindow?.close(); }
 
   async function dragWindow(event: MouseEvent) {
+    if (event.button !== 0) return;
     const targetElement = event.target as HTMLElement | null;
     if (targetElement?.closest('button, select, a, input, textarea')) return;
     await appWindow?.startDragging();
   }
 
   async function openSettings() {
+    if (miniWindow) await leaveMiniWindow();
     focused = false;
     libraryOpen = false;
     view = 'settings';
@@ -1494,6 +1631,23 @@
     focusInput();
   }
 
+  async function toggleMiniWindow() {
+    if (miniWindow) {
+      await leaveMiniWindow();
+    } else {
+      if (view === 'settings') await closeSettings();
+      miniWindow = true;
+      persistMiniWindow(true);
+      await scheduleWindowMode(true, miniHeight);
+    }
+    await tick();
+    if (view === 'practice') focusInput();
+  }
+
+  function exitMiniWindow() {
+    if (miniWindow) void toggleMiniWindow();
+  }
+
   async function navigateBack() {
     if (selectedAgent) {
       closeAgentDetail();
@@ -1511,7 +1665,11 @@
   <title>{t.brand} · {t.subtitle}</title>
 </svelte:head>
 
-<section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
+<section class="widget" class:tauri={isTauri} class:mini-window={miniWindow} role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} style:--mini-height="{miniHeight}px" onpointerdowncapture={markSurfacePress} onclickcapture={restoreSurfaceWindowFocus}>
+  {#if miniWindow}
+    <MiniToolbar {t} {isTauri} {pinned} {dragWindow} {togglePinned} {minimize} {close} restoreWindow={exitMiniWindow} />
+  {/if}
+  {#if !miniWindow}
   <TitleBar
     {dragWindow}
     {t}
@@ -1519,12 +1677,14 @@
     {view}
     {navigateBack}
     {openSettings}
+    {toggleMiniWindow}
     {isTauri}
     {pinned}
     {togglePinned}
     {minimize}
     {close}
   />
+  {/if}
 
   {#if view === 'settings'}
     <SettingsPage
@@ -1612,6 +1772,8 @@
     />
   {:else}
     <PracticePage
+      {miniWindow}
+      {exitMiniWindow}
       {restorePracticeTypingFocus}
       {chapterPaused}
       {t}

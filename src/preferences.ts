@@ -50,3 +50,9 @@ export function loadPracticeOrder(): PracticeOrder {
   } catch { return 'book'; }
 }
 
+export function loadMiniWindow(): boolean {
+  try {
+    return localStorage.getItem('typelet.window.mini') === 'true';
+  } catch { return false; }
+}
+

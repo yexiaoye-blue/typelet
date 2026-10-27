@@ -15,6 +15,14 @@ if [[ ! "$pkg" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
+# The same version lives in three files; a release must not go out desynced.
+crate=$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' src-tauri/Cargo.toml | head -n 1)
+npm=$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' package.json | head -n 1)
+if [[ "$crate" != "$pkg" || "$npm" != "$pkg" ]]; then
+  echo "Version mismatch: src-tauri/Cargo.toml is ${crate:-empty}, package.json is ${npm:-empty}, but tauri.conf.json is ${pkg}. Update all three before tagging." >&2
+  exit 1
+fi
+
 tag="$GITHUB_REF_NAME"
 if [[ ! "$tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.-]+)?$ ]]; then
   echo "Tag ${tag} is not a semantic version. Example: v${pkg} or v${pkg}-rc.1" >&2

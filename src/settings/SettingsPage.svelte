@@ -167,6 +167,19 @@
     loadFonts: any;
     appVersion: any;
   } = $props();
+
+  function fontOptionId(index: number) {
+    return 'font-option-' + index;
+  }
+
+  // An option button can hold focus after a click; Escape must still close the menu.
+  function onFontMenuKeydown(event: KeyboardEvent) {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeFontMenu();
+    fontField?.querySelector('input')?.focus();
+  }
 </script>
 
     <main class="settings-page" bind:this={settingsPage}>
@@ -394,6 +407,7 @@
               aria-expanded={fontMenuOpen}
               aria-controls="font-menu"
               aria-autocomplete="list"
+              aria-activedescendant={fontMenuOpen && fontHighlight >= 0 ? fontOptionId(fontHighlight) : undefined}
               placeholder={fontMenuOpen ? fontLabel(fontDraft) : t.fontSearch}
               value={fontMenuOpen ? fontQuery : fontLabel(fontDraft)}
               onfocus={openFontMenu}
@@ -403,9 +417,9 @@
             <button type="button" class="font-disclosure" aria-label={t.font} aria-expanded={fontMenuOpen} onclick={() => fontMenuOpen ? closeFontMenu() : openFontMenu()}>{fontMenuOpen ? '⌃' : '⌄'}</button>
           </div>
           {#if fontMenuOpen}
-            <div id="font-menu" class="font-menu" role="listbox" aria-label={t.font} style:max-height={fontMenuMaxHeight + 'px'}>
+            <div id="font-menu" class="font-menu" role="listbox" aria-label={t.font} tabindex="-1" style:max-height={fontMenuMaxHeight + 'px'} onkeydown={onFontMenuKeydown}>
               {#each fontChoiceList as choice, index (choice.value)}
-                <button type="button" role="option" aria-selected={choice.value === fontDraft} class:active={index === fontHighlight} onmouseenter={() => fontHighlight = index} onclick={() => chooseFont(choice.value)}>{choice.label}</button>
+                <button type="button" id={fontOptionId(index)} role="option" aria-selected={choice.value === fontDraft} class:active={index === fontHighlight} onmouseenter={() => fontHighlight = index} onclick={() => chooseFont(choice.value)}>{choice.label}</button>
               {:else}
                 <p class="font-empty">{t.fontEmpty}</p>
               {/each}

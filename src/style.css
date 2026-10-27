@@ -99,16 +99,24 @@ progress::-moz-progress-bar { background: var(--action); }
 .chapter-position { flex: none; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .typing-surface.word-mode { display: flex; align-items: center; justify-content: center; }
 .practice-body { height: 100%; }
-.practice-body:not(.word-stage) .word-row, .practice-body:not(.word-stage) .target { height: 100%; }
 .sentence-stack { display: contents; }
-.practice-body.with-gloss { display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 0; }
+.practice-body:not(.word-stage) { display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 0; }
 .practice-body:not(.word-stage):has(.chapter-result) { display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.practice-body.with-gloss .sentence-stack { display: flex; flex-direction: column; gap: 8px; width: 100%; min-height: 0; max-height: 100%; overflow: auto; overscroll-behavior: contain; }
-.practice-body.with-gloss .word-row { flex: none; align-items: stretch; justify-content: flex-start; height: auto; overflow: visible; }
-.practice-body.with-gloss .word-slot,
-.practice-body.with-gloss .target { height: auto; overflow: visible; }
+.practice-body:not(.word-stage) .sentence-stack { display: block; width: 100%; min-height: 0; max-height: 100%; overflow: auto; overscroll-behavior: contain; }
+.practice-body:not(.word-stage) .word-row { display: block; height: auto; min-height: 0; overflow: visible; }
+.practice-body:not(.word-stage) .word-slot { display: block; width: 100%; min-height: 0; overflow: visible; }
+.practice-body:not(.word-stage) .target {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  margin-inline: 0;
+  overflow: visible;
+}
 .practice-body:not(.word-stage) .target { margin: 0; padding: 1px 0 3px; font-size: 17px; line-height: 22px; }
-.sentence-gloss { display: block; flex: none; margin: 0; color: var(--muted); font-size: 13px; font-weight: 400; line-height: 18px; text-align: start; }
+.sentence-gloss { display: block; flex: 0 0 auto; width: 100%; min-height: 0; margin: 0; color: var(--muted); font-size: 13px; font-weight: 400; line-height: 18px; text-align: start; }
+.practice-body.with-gloss .sentence-gloss { margin-top: 8px; }
 .word-stage { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 100%; min-height: 0; overflow: hidden; }
 .word-stage:has(.chapter-actions) { justify-content: center; gap: 0; }
 .word-row { display: flex; flex: none; align-items: center; justify-content: center; gap: 2px; width: 100%; height: 64px; max-width: 100%; }
@@ -139,7 +147,7 @@ progress::-moz-progress-bar { background: var(--action); }
   user-select: none;
 }
 .awaiting-start.with-gloss .sentence-stack,
-.paused.with-gloss .sentence-stack { overflow: visible; }
+.paused.with-gloss .sentence-stack { overflow: auto; }
 .start-hint { margin: 0; color: var(--ink); font-size: 15px; font-weight: 400; line-height: 20px; text-align: center; pointer-events: none; }
 .awaiting-start .start-hint,
 .paused .start-hint { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; }
@@ -296,4 +304,84 @@ progress::-moz-progress-bar { background: var(--action); }
 @media (prefers-reduced-motion: reduce) {
   .window-actions button { transition: none; }
   button:active { transform: none; }
+}
+
+.widget.mini-window {
+  --mini-control-hover: color-mix(in srgb, var(--ink) 8%, var(--tile));
+  --mini-control-pressed: color-mix(in srgb, var(--ink) 13%, var(--tile));
+  height: var(--mini-height, 228px);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: var(--tile);
+}
+.widget.tauri.mini-window { height: 100%; border: 0; border-radius: 0; }
+.widget.mini-window .practice-page { grid-template-rows: minmax(0, 1fr); }
+/* Match the toolbar button height on both edges, so content is centered in
+   the whole window rather than in the space below its controls. */
+.widget.mini-window .practice-tile { position: relative; gap: 0; padding: 36px 20px; }
+.widget.mini-window .word-stage { gap: 8px; overflow: auto; overscroll-behavior: contain; }
+.widget.mini-window .word-stage .word-row { height: 54px; }
+.widget.mini-window .word-target { font-weight: 500; line-height: 1.15; }
+.widget.mini-window .phonetic-row { height: 24px; gap: 4px; overflow: visible; }
+.widget.mini-window .word-phonetic { font-size: 12px; line-height: 24px; }
+.widget.mini-window .speaker-inline { width: 28px; height: 28px; }
+.widget.mini-window .speaker-inline svg { width: 16px; height: 16px; }
+.widget.mini-window .word-translation { width: 100%; min-height: 22px; max-height: 44px; font-size: 15px; line-height: 22px; font-weight: 400; }
+.widget.mini-window .practice-body:not(.word-stage) .target { font-size: 17px; line-height: 26px; }
+.widget.mini-window .practice-body.with-gloss .target { padding-block: 4px 6px; }
+.widget.mini-window .sentence-gloss { margin-top: 12px; font-size: 13px; line-height: 20px; }
+.widget.mini-window .chapter-result-title { font-size: 22px; line-height: 28px; }
+.widget.mini-window .chapter-result { gap: 4px; }
+.widget.mini-window .chapter-actions { flex-direction: row; gap: 12px; margin-top: 16px; }
+.widget.mini-window .chapter-actions .primary { min-width: 0; height: 32px; padding-inline: 16px; font-size: 13px; }
+.widget.mini-window .chapter-retry { font-size: 12px; padding-inline: 4px; }
+.widget.mini-window .typing-surface { overflow: hidden; }
+.widget.mini-window .practice-body { transition: filter 180ms ease-out, opacity 180ms ease-out; }
+/* Blur the rendered viewport after its content scrolls, so the scrollbar and
+   text share one effect. Feather the viewport boundary instead of clipping it. */
+.widget.mini-window .practice-body :is(.word-row, .phonetic-row, .word-translation, .sentence-stack) { filter: none; opacity: 1; }
+.widget.mini-window .typing-surface.obscured .practice-body { filter: blur(8px); opacity: .72; pointer-events: none; user-select: none; }
+.widget.mini-window .typing-surface::after {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background:
+    linear-gradient(to right, var(--tile), transparent 20px, transparent calc(100% - 20px), var(--tile)),
+    linear-gradient(to bottom, var(--tile), transparent 20px, transparent calc(100% - 20px), var(--tile));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease-out;
+}
+.widget.mini-window .typing-surface.obscured::after { opacity: 1; }
+.mini-toolbar { position: absolute; z-index: 6; inset: 0 4px auto; display: flex; justify-content: space-between; height: 40px; user-select: none; -webkit-app-region: no-drag; }
+.mini-toolbar-group { display: flex; align-items: center; }
+.mini-toolbar-button { position: relative; display: grid; place-items: center; flex: none; width: 36px; height: 36px; padding: 10px; border-radius: 8px; color: var(--muted); transition: color 160ms ease-out, opacity 160ms ease-out; }
+.mini-toolbar-button::before { content: ''; position: absolute; inset: 4px; z-index: -1; border-radius: 6px; }
+.mini-toolbar-button:hover { color: var(--ink); }
+.mini-toolbar-button:hover::before { background: var(--mini-control-hover); }
+.mini-toolbar-button:active { transform: none; }
+.mini-toolbar-button:active::before { background: var(--mini-control-pressed); }
+.mini-toolbar-button:focus-visible { outline-offset: -4px; }
+.mini-toolbar-button.pinned { color: var(--action); opacity: 1; pointer-events: auto; }
+.mini-toolbar-button svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.mini-toolbar-aux { opacity: 0; pointer-events: none; }
+.mini-window:hover .mini-toolbar-aux,
+.mini-toolbar:focus-within .mini-toolbar-aux { opacity: 1; pointer-events: auto; }
+.mini-start-overlay { position: absolute; z-index: 2; inset: 36px 20px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; pointer-events: none; }
+.mini-start-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 36px; padding: 0 16px; border: 1px solid var(--hairline); border-radius: 999px; background: var(--canvas); color: var(--ink); font-size: 13px; font-weight: 600; pointer-events: auto; }
+.mini-start-button svg { width: 14px; height: 14px; fill: currentColor; }
+.mini-start-button:hover { background: var(--mini-control-hover); }
+.mini-start-button:active { background: var(--mini-control-pressed); }
+.mini-start-overlay p { margin: 0; color: var(--ink); font-size: 12px; line-height: 18px; }
+@media (hover: none) {
+  .mini-toolbar-aux { opacity: 1; pointer-events: auto; }
+}
+@media (max-width: 320px) {
+  .widget.mini-window .practice-tile { padding-inline: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mini-toolbar-button,
+  .widget.mini-window .practice-body,
+  .widget.mini-window .typing-surface::after { transition: none; }
 }

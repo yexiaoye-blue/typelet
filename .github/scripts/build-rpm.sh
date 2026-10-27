@@ -40,8 +40,9 @@ esac
 curl -fsSL "https://nodejs.org/dist/v${node_version}/node-v${node_version}-linux-${node_arch}.tar.xz" \
   | tar -xJ -C /usr/local --strip-components=1
 
-export PATH="${CARGO_HOME}/bin:${PATH}"
-if [[ ! -x "${CARGO_HOME}/bin/rustup" ]]; then
+cargo_home="${CARGO_HOME:-/work/.ci/cargo}"
+export PATH="${cargo_home}/bin:${PATH}"
+if [[ ! -x "${cargo_home}/bin/rustup" ]]; then
   curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
 fi

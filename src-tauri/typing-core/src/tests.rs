@@ -32,6 +32,20 @@ fn article_parser_normalizes_paragraphs_and_handles_abbreviations_and_quotes() {
 }
 
 #[test]
+fn period_before_closing_bracket_still_ends_the_sentence() {
+    let article = parse_article(
+        "sample",
+        "test",
+        "He shouted (loudly.) Next came silence. Wow!) Truly.",
+    )
+    .expect("test input is valid");
+    assert_eq!(
+        article.sentences,
+        ["He shouted (loudly.)", "Next came silence.", "Wow!)", "Truly."]
+    );
+}
+
+#[test]
 fn article_without_terminal_punctuation_is_one_sentence() {
     let article = parse_article("sample", "test", "one\n two").expect("test input is valid");
     assert_eq!(article.sentences, ["one two"]);

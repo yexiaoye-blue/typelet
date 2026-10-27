@@ -44,6 +44,8 @@
     displayAccuracy,
     formatDuration,
     displayElapsed,
+    miniWindow,
+    exitMiniWindow,
   }: {
     restorePracticeTypingFocus: any;
     chapterPaused: any;
@@ -87,11 +89,23 @@
     displayAccuracy: any;
     formatDuration: any;
     displayElapsed: any;
+    miniWindow: boolean;
+    exitMiniWindow: () => void;
   } = $props();
+
+  function exitMiniFromDoubleClick(event: MouseEvent) {
+    if (!miniWindow) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest('button, a, input, textarea, select')) return;
+    exitMiniWindow();
+  }
 </script>
 
+    <!-- Button activation completes before input focus is restored. The capture field handles keyboard input. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
     <main class="practice-page" onmousedown={restorePracticeTypingFocus} onclick={restorePracticeTypingFocus}>
       <section class="practice-tile">
+        {#if !miniWindow}
         <div class="passage-heading">
           {#if !chapterPaused}
             <div class="practice-controls">
@@ -126,9 +140,11 @@
             {/if}
           </div>
         </div>
+        {/if}
 
 
-        <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} class:obscured={awaitingStart || (practicePhase === 'paused' && !chapterPaused)} for="typing-capture" ondblclick={exitMiniFromDoubleClick} ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
           <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:with-gloss={snapshot.mode === 'sentence' && snapshot.translation.length > 0} class:awaiting-start={awaitingStart} class:paused={practicePhase === 'paused' && !chapterPaused}>
             {#if chapterPaused}
               <div class="chapter-result" role="status">
@@ -144,7 +160,7 @@
               <div class="word-row">
                 <div class="word-slot">
                   <div bind:this={textDisplay} id="passage-text" class="target" class:word-target={snapshot.mode === 'word'} aria-label={t.target} style:font-size={snapshot.mode === 'word' ? wordFontSize + 'px' : undefined}>
-                {#each expected as char, index}
+                {#each expected as char, index (index)}
                   {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
                 {/each}
                   </div>
@@ -154,9 +170,9 @@
                 <p class="sentence-gloss">{snapshot.translation}</p>
               {/if}
             </div>
-            {#if awaitingStart}
+            {#if awaitingStart && !miniWindow}
               <p class="start-hint">{t.pressAnyKey}</p>
-            {:else if practicePhase === 'paused' && !chapterPaused}
+            {:else if practicePhase === 'paused' && !chapterPaused && !miniWindow}
               <p class="start-hint">{t.pressAnyKeyContinue}</p>
             {/if}
             {#if snapshot.mode === 'word' && snapshot.word}
@@ -176,7 +192,17 @@
           oncompositionstart={() => { composing = true; compositionText = ''; }} oncompositionupdate={(event) => compositionText = event.data}
           oncompositionend={handleCompositionEnd} oninput={handleInput} onkeydown={handleKeydown}></textarea>
         </label>
+        {#if miniWindow && !chapterPaused && (awaitingStart || practicePhase === 'paused')}
+          <div class="mini-start-overlay">
+            <button type="button" class="mini-start-button" onclick={togglePractice}>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m7 4 9 6-9 6V4Z" /></svg>
+              <span>{awaitingStart ? t.startPractice : t.resumePractice}</span>
+            </button>
+            <p>{awaitingStart ? t.pressAnyKey : t.pressAnyKeyContinue}</p>
+          </div>
+        {/if}
       </section>
+      {#if !miniWindow}
       <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' || snapshot.chapterCount > 1 ? snapshot.chapterProgress : stats.percent} max="100"></progress>
       <section class="summary" class:chapter-paused={chapterPaused}>
         <div class="stats">
@@ -185,4 +211,5 @@
           <div><strong>{formatDuration(displayElapsed)}</strong><span>{t.time}</span></div>
         </div>
       </section>
+      {/if}
     </main>
