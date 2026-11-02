@@ -1,6 +1,7 @@
 # 文档
 
 - [使用、安装、网页预览和界面截图](../README.md)
+- [安装、练习、设置和数据保存](getting-started.md)
 - [文章和词表导入格式](importing.md)
 - [当前产品和技术范围](design.md)
 - [后续规划](roadmap.md)
