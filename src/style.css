@@ -226,6 +226,8 @@ progress::-moz-progress-bar { background: var(--action); }
 .setting-row.sound-header { margin-top: 0; padding-top: 0; border-top: 0; }
 .sound-note { margin: 8px 0 0; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.5; }
 .setting-row .settings-copy { min-width: 0; flex: 1; }
+.shortcut-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; text-align: left; }
+.shortcut-entry:hover { border-color: var(--focus); }
 .nav-row { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--hairline); text-align: left; }
 .nav-row strong { flex: none; color: var(--ink); font-size: 13px; font-weight: 600; }
 .library-intro { color: var(--muted); font-size: 11px; line-height: 1.45; }

@@ -114,6 +114,7 @@
   let input = $state<HTMLTextAreaElement | undefined>();
   let backButton = $state<HTMLButtonElement | undefined>();
   let settingsPage = $state<HTMLElement | undefined>();
+  let shortcutEntry = $state<HTMLButtonElement | undefined>();
   const settingsScroll = new ScrollMemory();
 
   let textDisplay = $state<HTMLDivElement | undefined>();
@@ -138,6 +139,7 @@
   let agentError = $state('');
   let selectedAgent = $state<AgentId | null>(null);
   let libraryOpen = $state(false);
+  let shortcutsOpen = $state(false);
   let agentDetail = $state<AgentDetail | null>(null);
   let agentDetailDraft = $state('');
   let agentDetailLoading = $state(false);
@@ -740,7 +742,22 @@
   function currentSettingsPage() {
     if (selectedAgent) return 'agent:' + selectedAgent;
     if (libraryOpen) return 'library';
+    if (shortcutsOpen) return 'shortcuts';
     return 'settings';
+  }
+
+  async function openShortcutSettings() {
+    rememberSettingsScroll();
+    shortcutsOpen = true;
+    await restoreSettingsScroll('shortcuts');
+    backButton?.focus({ preventScroll: true });
+  }
+
+  async function closeShortcutSettings() {
+    rememberSettingsScroll();
+    shortcutsOpen = false;
+    await restoreSettingsScroll('settings');
+    shortcutEntry?.focus({ preventScroll: true });
   }
 
   function updateShortcuts(next: Shortcuts) {
@@ -1621,6 +1638,7 @@
     if (miniWindow) await leaveMiniWindow();
     focused = false;
     libraryOpen = false;
+    shortcutsOpen = false;
     view = 'settings';
     if (!fontsLoaded) void loadFonts();
     if (!agentsLoaded) void loadAgents();
@@ -1632,6 +1650,7 @@
     rememberSettingsScroll();
     view = 'practice';
     libraryOpen = false;
+    shortcutsOpen = false;
     selectedAgent = null;
     agentDetail = null;
     agentDetailDraft = '';
@@ -1658,6 +1677,10 @@
   }
 
   async function navigateBack() {
+    if (shortcutsOpen) {
+      await closeShortcutSettings();
+      return;
+    }
     if (selectedAgent) {
       closeAgentDetail();
       return;
@@ -1782,6 +1805,9 @@
       {loadFonts}
       {appVersion}
       {shortcuts}
+      {shortcutsOpen}
+      {openShortcutSettings}
+      bind:shortcutEntry
       updateShortcuts={updateShortcuts}
       shortcutRecordingChange={setShortcutRecording}
     />
