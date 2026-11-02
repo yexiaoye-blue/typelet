@@ -87,6 +87,9 @@
     loadFonts,
     appVersion,
     shortcuts,
+    shortcutsOpen,
+    openShortcutSettings,
+    shortcutEntry = $bindable(),
     updateShortcuts,
     shortcutRecordingChange,
   }: {
@@ -172,6 +175,9 @@
     loadFonts: any;
     appVersion: any;
     shortcuts: Shortcuts;
+    shortcutsOpen: boolean;
+    openShortcutSettings: () => void | Promise<void>;
+    shortcutEntry: HTMLButtonElement | undefined;
     updateShortcuts: (next: Shortcuts) => void;
     shortcutRecordingChange: (recording: boolean) => void;
   } = $props();
@@ -213,6 +219,12 @@
           {/if}
           {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
         </section>
+      {:else if shortcutsOpen}
+        <div class="settings-heading">
+          <button bind:this={backButton} class="back-button" aria-label={t.shortcutsBack} title={t.shortcutsBack} onclick={navigateBack}>←</button>
+          <h1>{t.shortcuts}</h1>
+        </div>
+        <ShortcutSettings {t} bindings={shortcuts} onChange={updateShortcuts} onRecordingChange={shortcutRecordingChange} />
       {:else if libraryOpen}
         <div class="settings-heading">
           <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
@@ -342,8 +354,10 @@
         </button>
       </section>
 
-      <ShortcutSettings {t} bindings={shortcuts} onChange={updateShortcuts} onRecordingChange={shortcutRecordingChange} />
-
+      <button bind:this={shortcutEntry} type="button" class="settings-group shortcut-entry" onclick={openShortcutSettings}>
+        <span class="settings-copy"><strong>{t.shortcuts}</strong><span>{t.shortcutsEntryHint}</span></span>
+        <span class="chevron" aria-hidden="true">›</span>
+      </button>
 
       <section class="settings-group" aria-label={t.soundSettings}>
         <div class="setting-row sound-header">
