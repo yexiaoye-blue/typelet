@@ -63,6 +63,11 @@ button:active:not(:disabled) { transform: scale(.97); }
 .window-actions { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
 .window-actions button { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; font-size: 19px; line-height: 1; transition: background .15s; }
 .window-actions button:hover { background: #333333; }
+.window-actions button:disabled { opacity: .4; cursor: default; }
+.mini-toolbar-button:disabled { cursor: default; }
+.mini-toolbar-button:disabled svg { opacity: .4; }
+.window-actions button:disabled:hover { background: none; }
+.mini-toolbar-button:disabled:hover::before { background: none; }
 .window-actions .settings-button { color: #c4c4c8; }
 .window-actions .settings-button[aria-pressed='true'], .window-actions .pinned, .window-actions button[aria-pressed='true'] { color: #2997ff; background: #252527; }
 .window-actions button[aria-pressed='true']:hover { color: #2997ff; background: #323236; }

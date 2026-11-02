@@ -1,6 +1,8 @@
 <script lang="ts">
   import SettingsSelect from '../components/SettingsSelect.svelte';
   import { fontStack } from '../fonts';
+  import ShortcutSettings from './ShortcutSettings.svelte';
+  import type { Shortcuts } from '../shortcuts';
 
   let {
     settingsPage = $bindable(),
@@ -84,6 +86,9 @@
     systemFonts,
     loadFonts,
     appVersion,
+    shortcuts,
+    updateShortcuts,
+    shortcutRecordingChange,
   }: {
     settingsPage: any;
     selectedAgent: any;
@@ -166,6 +171,9 @@
     systemFonts: any;
     loadFonts: any;
     appVersion: any;
+    shortcuts: Shortcuts;
+    updateShortcuts: (next: Shortcuts) => void;
+    shortcutRecordingChange: (recording: boolean) => void;
   } = $props();
 
   function fontOptionId(index: number) {
@@ -334,6 +342,8 @@
         </button>
       </section>
 
+      <ShortcutSettings {t} bindings={shortcuts} onChange={updateShortcuts} onRecordingChange={shortcutRecordingChange} />
+
 
       <section class="settings-group" aria-label={t.soundSettings}>
         <div class="setting-row sound-header">
@@ -382,7 +392,7 @@
 
         <section class="settings-group agent-settings" aria-label={t.agents}>
           <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
-          {#each agents as agent}
+          {#each agents as agent (agent.id)}
             <div class="agent-row" class:unsupported={!agent.supported}>
               <button class="agent-copy agent-open" aria-label={t.agentDetails + ': ' + agent.name} onclick={() => openAgentDetail(agent)}>
                 <strong>{agent.name}</strong><span>{agent.supported ? agent.event + ' · ' + agent.format : t.agentUnavailable}</span>
