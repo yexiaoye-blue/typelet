@@ -49,7 +49,15 @@
   import SettingsPage from './settings/SettingsPage.svelte';
   import TitleBar from './shell/TitleBar.svelte';
   import MiniToolbar from './shell/MiniToolbar.svelte';
-  import { createDeferredFocus } from './deferred-focus';
+  import { createDeferredFocus, focusWindowOnPress } from './deferred-focus';
+  import {
+    detectPlatform,
+    loadShortcuts,
+    saveShortcuts,
+    shortcutAriaLabel,
+    shortcutMatches,
+    type Shortcuts,
+  } from './shortcuts';
 
   type Statistics = PracticeSnapshot['stats'];
   type AgentId = 'codex' | 'cursor' | 'dsh';
@@ -83,12 +91,12 @@
   let windowSizeGeneration = 0;
   let practiceReady = false;
   let focusActive = true;
+  let shortcuts = $state<Shortcuts>(loadShortcuts());
+  let shortcutRecording = $state(false);
+  const shortcutPlatform = detectPlatform();
   const practiceFocus = createDeferredFocus(() => {
     if (!focusActive || view !== 'practice' || !document.hasFocus()) return;
     if (input && document.activeElement !== input) input.focus({ preventScroll: true });
-  });
-  const nativeFocus = createDeferredFocus(() => {
-    void restoreNativeWindowFocus();
   });
   let snapshot = $state<PracticeSnapshot>(emptySnapshot);
   let libraries = $derived(snapshot.mode === 'sentence' ? catalog.articles : catalog.wordBooks);
@@ -99,6 +107,7 @@
   let focused = $state(false);
   let elapsed = $state(0);
   let pinned = $state(false);
+  let pinSupported = $state(false);
   let pinGeneration = 0;
   let composing = $state(false);
   let surfacePressed = $state(false);
@@ -158,6 +167,8 @@
   let resolvedTheme = $derived<Theme>(themePreference === 'system' ? systemTheme : themePreference);
   let t = $derived(locale === 'zh' ? zh : en);
   let miniHeight = $derived(snapshot.mode === 'sentence' ? sentenceMiniHeight : wordMiniHeight);
+  let openSettingsAria = $derived(shortcutAriaLabel(shortcuts.openSettings, shortcutPlatform));
+  let toggleMiniWindowAria = $derived(shortcutAriaLabel(shortcuts.toggleMiniWindow, shortcutPlatform));
   let builtinLibraries = $derived(libraries.filter((item) => !item.removable));
   let importedLibraries = $derived(libraries.filter((item) => item.removable));
   let target = $derived(snapshot.target);
@@ -240,15 +251,20 @@
   });
 
   function handlePracticeNavigationKey(event: KeyboardEvent) {
-    if (event.defaultPrevented || view !== 'practice' || event.repeat || event.isComposing || event.altKey || event.metaKey) return false;
+    if (event.defaultPrevented || view !== 'practice' || event.repeat || event.isComposing || shortcutRecording) return false;
     const target = event.target as HTMLElement | null;
     if (target?.closest('[role="combobox"][aria-expanded="true"], [role="listbox"]')) return false;
     if (target?.closest('select, input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return false;
+    const previousChapter = shortcutMatches(event, shortcuts.previousChapter, shortcutPlatform);
+    const nextChapter = shortcutMatches(event, shortcuts.nextChapter, shortcutPlatform);
+    const previousItem = shortcutMatches(event, shortcuts.previousItem, shortcutPlatform);
+    const nextItem = shortcutMatches(event, shortcuts.nextItem, shortcutPlatform);
+    if (!previousChapter && !nextChapter && !previousItem && !nextItem) return false;
     event.preventDefault();
-    const direction = event.key === 'ArrowLeft' ? -1 : 1;
-    if (event.ctrlKey) void navigateChapter(direction);
-    else void navigateItem(direction);
+    if (previousChapter) void navigateChapter(-1);
+    else if (nextChapter) void navigateChapter(1);
+    else if (previousItem) void navigateItem(-1);
+    else void navigateItem(1);
     return true;
   }
 
@@ -263,7 +279,6 @@
 
     const leaveApp = () => {
       practiceFocus.cancel();
-      nativeFocus.cancel();
       focused = false;
       pausePractice();
     };
@@ -285,7 +300,7 @@
     window.addEventListener('languagechange', syncSystemLocale);
     document.addEventListener('visibilitychange', hidden);
     const startFromKey = (event: KeyboardEvent) => {
-      if (view !== 'practice') return;
+      if (event.defaultPrevented || shortcutRecording || view !== 'practice') return;
       if (chapterPaused) {
         if (event.key === 'Enter' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
           // A focused chapter button keeps its own Enter activation.
@@ -311,18 +326,18 @@
       beginPractice();
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented) return;
-      if (event.code === 'KeyM' && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && !event.repeat && !event.isComposing) {
+      if (event.defaultPrevented || shortcutRecording) return;
+      if (shortcutMatches(event, shortcuts.openSettings, shortcutPlatform)) {
+        event.preventDefault();
+        if (view !== 'settings') void openSettings();
+        return;
+      }
+      if (shortcutMatches(event, shortcuts.toggleMiniWindow, shortcutPlatform)) {
         event.preventDefault();
         void toggleMiniWindow();
         return;
       }
       if (handlePracticeNavigationKey(event)) return;
-      if (event.code === 'Comma' && event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey && !event.repeat) {
-        event.preventDefault();
-        if (view !== 'settings') void openSettings();
-        return;
-      }
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
         // Escape inside a text field must not throw away unsaved edits by leaving settings.
@@ -344,8 +359,8 @@
     const primeKeySound = () => unlockKeySound();
     window.addEventListener('pointerdown', primeKeySound, true);
     window.addEventListener('keydown', primeKeySound, true);
-    window.addEventListener('keydown', startFromKey);
     window.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('keydown', startFromKey);
     colorScheme.addEventListener?.('change', syncSystemTheme);
     const fontLayoutChanged = () => { void updateCaret(); };
     resizeObserver = new ResizeObserver(fontLayoutChanged);
@@ -357,10 +372,13 @@
     });
 
     if (appWindow) {
-      const pinRead = pinGeneration;
-      void appWindow.isAlwaysOnTop().then(value => {
+      void invoke<{ backend: string; pinSupported: boolean }>('get_window_platform').then(async platform => {
+        pinSupported = platform.pinSupported;
+        if (!pinSupported) return;
+        const pinRead = pinGeneration;
+        const value = await appWindow.isAlwaysOnTop();
         if (pinRead === pinGeneration) pinned = value;
-      });
+      }).catch(error => console.warn('Could not read window support:', error));
       void appWindow.onFocusChanged(({ payload: active }) => {
         if (!active) pausePractice();
       }).then(unlisten => { unlistenFocus = unlisten; });
@@ -377,7 +395,6 @@
     return () => {
       focusActive = false;
       practiceFocus.cancel();
-      nativeFocus.cancel();
       if (timer) clearInterval(timer);
       window.removeEventListener('blur', leaveApp);
       window.removeEventListener('pointerup', releaseSurface);
@@ -726,6 +743,15 @@
     return 'settings';
   }
 
+  function updateShortcuts(next: Shortcuts) {
+    shortcuts = next;
+    saveShortcuts(next);
+  }
+
+  function setShortcutRecording(active: boolean) {
+    shortcutRecording = active;
+  }
+
   function rememberSettingsScroll() {
     settingsScroll.save(currentSettingsPage(), settingsPage);
   }
@@ -800,17 +826,6 @@
 
   function focusInput() {
     practiceFocus.request();
-  }
-
-  async function restoreNativeWindowFocus() {
-    if (!focusActive || !appWindow || document.hidden) return;
-    try {
-      if (!await appWindow.isFocused() && focusActive && !document.hidden) {
-        await appWindow.setFocus();
-      }
-    } catch (error) {
-      console.warn('Could not restore Typelet window focus:', error);
-    }
   }
 
   function dismissChapterPicker() {
@@ -1098,14 +1113,8 @@
     const origin = event.target as HTMLElement | null;
     const interactive = origin?.closest('button, select, a, input, textarea, summary, [role="button"]');
     surfacePressed = view === 'practice' && !interactive;
-    // Native and input focus are restored after click, never during pointerdown.
-  }
-
-  function restoreSurfaceWindowFocus(event: MouseEvent) {
-    const origin = event.target as HTMLElement | null;
-    // Do not undo intentional minimize/close or interfere with window dragging.
-    if (origin?.closest('.window-actions, .mini-toolbar')) return;
-    nativeFocus.request();
+    // Best-effort activation for a user press; input focus remains deferred.
+    focusWindowOnPress(appWindow);
   }
 
   function handleFocus() {
@@ -1582,7 +1591,7 @@
   }
 
   async function togglePinned() {
-    if (!appWindow) return;
+    if (!appWindow || !pinSupported) return;
     const next = !pinned;
     pinGeneration += 1;
     pinned = next;
@@ -1665,9 +1674,9 @@
   <title>{t.brand} · {t.subtitle}</title>
 </svelte:head>
 
-<section class="widget" class:tauri={isTauri} class:mini-window={miniWindow} role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} style:--mini-height="{miniHeight}px" onpointerdowncapture={markSurfacePress} onclickcapture={restoreSurfaceWindowFocus}>
+<section class="widget" class:tauri={isTauri} class:mini-window={miniWindow} role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} style:--mini-height="{miniHeight}px" onpointerdowncapture={markSurfacePress}>
   {#if miniWindow}
-    <MiniToolbar {t} {isTauri} {pinned} {dragWindow} {togglePinned} {minimize} {close} restoreWindow={exitMiniWindow} />
+    <MiniToolbar {t} {isTauri} {pinned} {pinSupported} {dragWindow} {togglePinned} {minimize} {close} restoreWindow={exitMiniWindow} restoreAria={toggleMiniWindowAria} />
   {/if}
   {#if !miniWindow}
   <TitleBar
@@ -1678,8 +1687,11 @@
     {navigateBack}
     {openSettings}
     {toggleMiniWindow}
+    {openSettingsAria}
+    {toggleMiniWindowAria}
     {isTauri}
     {pinned}
+    {pinSupported}
     {togglePinned}
     {minimize}
     {close}
@@ -1769,6 +1781,9 @@
       {systemFonts}
       {loadFonts}
       {appVersion}
+      {shortcuts}
+      updateShortcuts={updateShortcuts}
+      shortcutRecordingChange={setShortcutRecording}
     />
   {:else}
     <PracticePage

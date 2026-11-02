@@ -103,6 +103,35 @@ await import('/tests/practice-layout.browser.ts').then(m => m.checkSentenceLayou
 await import('/tests/practice-layout.browser.ts').then(m => m.checkPracticeCentering())
 ~~~
 
+## 2026-10-27 快捷键设置
+
+- 从 `develop`（`820de4d`）创建 `feature/shortcut-settings`。设置页增加快捷键列表、搜索、点击录制、Esc 取消、单项恢复默认及全部恢复默认；支持打开设置、切换小窗、上一项/下一项和上一章/下一章。配置保存在本机 `localStorage`，界面提供中英文及 Ctrl/⌘ 平台适配。
+- 重复组合键会显示被占用的操作名称；恢复单项默认值也检查冲突并保留原配置。录制期间阻止应用快捷键执行，导航快捷键优先于“按任意键开始”，避免功能键意外启动练习。Esc 暂停及章节完成后的 Enter 继续仍为固定操作，在列表下方说明。
+- `npm test`：Rust 19 项、TypeScript 34 项通过；`npm run build`（含 TypeScript 检查）和 `git diff --check` 通过。Svelte 分析无 issues；保留原有 effects/bind:this 建议。构建保留既有 Tauri 动态导入提示。
+- 浏览器预览验证中英文列表、搜索、录制 Ctrl+Shift+O、旧组合键失效、新组合键打开设置、刷新后配置保留、重复组合键拒绝、Esc 取消、裸字母错误提示以及恢复默认。追加验证：练习按钮聚焦时按自定义 F2 导航不会启动练习；单项恢复默认遇到另一操作占用时显示冲突。测试结束恢复快捷键默认值和系统语言偏好。
+- Impeccable 检测只有字号和圆角与 DESIGN.md 营销页面标尺不一致的 advisory，沿用现有紧凑设置页的尺寸。本轮未生成或安装 RPM；GTK 桌面窗口及 macOS 实际按键行为仍需实机验收。
+
+## 2026-10-27 小窗点击导致窗口降层回归
+
+- 历史差异：`80f64fa` 在 `pointerdown` 阶段请求原生窗口聚焦；后续小窗提交 `3820319` 改为点击结束后再请求。当时推测这是窗口降层的原因，但未进行实际点击验收；2026-10-30 用户在安装此轮 RPM 后再次复现，不能将该推测视为已确认根因。
+- 将原生提层恢复到 `markSurfacePress` 的 pointerdown 路径，保留输入聚焦的延迟，移除 click 阶段的重复原生聚焦请求；原生聚焦失败只记录为忽略，不阻断点击。新增单测覆盖 pointerdown 契约、缺失窗口和拒绝聚焦。
+- `npx tsc --noEmit`、`npm test`（Rust 19 项、TypeScript 37 项）和 `git diff --check` 通过；已重新生成 `Typelet-0.1.1-1.x86_64.rpm`，构建日期为 2026-10-27 21:02。网页预览不能替代 GTK 窗口层级验收，仍需安装新 RPM 后在 GNOME/XWayland 连续点击窗口和下层窗口确认。
+
+## 2026-10-30 原生 Wayland 对照与启动后端修复
+
+- 核对运行中 `/usr/bin/typelet`、安装记录和 RPM payload：用户运行的是 10 月 27 日 21:02 生成的 RPM，文件校验正常。故障不能归因于安装了旧包。
+- 用户配合实际左键点击；原生事件记录出现窗口先失焦、部分点击未进入 GTK 的情况，没有捕获到 Typelet 调用降低窗口的操作。此前把 pointerdown/click 时序差异当成根因的结论不成立。
+- 使用相同 `/usr/bin/typelet`，在隔离的会话和临时配置中指定 `GDK_BACKEND=wayland`，调试器读回 `GdkWaylandDisplay`。用户确认这个窗口能正常点击、输入，连续点击不会下沉。由此锁定本机强制 XWayland 的运行路径会触发问题，原生 Wayland 可避开故障；没有进一步断言具体 GTK/Mutter 上游缺陷。
+- 删除为置顶而在 GNOME 下强制设置 `GDK_BACKEND=x11` 的启动逻辑。GTK 自动选择当前桌面的后端，也继续遵循用户显式指定的后端。启动日志输出实际后端和置顶支持状态；前端从原生状态获取置顶能力。GTK 3 Wayland 的 `set_keep_above` 没有实现，因此普通窗口和小窗中的置顶按钮禁用并说明原因，避免显示虚假的置顶状态。
+- 删除只匹配源代码 pointerdown 写法的测试，保留输入焦点延迟和原生激活调用的行为测试。Rust 主程序 12 项、练习核心 19 项及 TypeScript 36 项通过，前端构建和 Rust 检查通过；RPM release 提升为 `2`，便于与先前同版本包区分。
+- 最终包 `Typelet-0.1.1-2.x86_64.rpm` 于 2026-10-30 19:04 生成，`rpm -K --nosignature` 返回 `digests OK`，SHA-256 为 `8bf366bd8de01d09e2d7d3405c6da539dc67d49c2e90d27024e45cf5890e6fc4`。直接运行从该包解出的二进制，未设置 `GDK_BACKEND`，日志为 `[window] backend=GdkWaylandDisplay pin_supported=false`。用户完成普通窗口与小窗的开始、输入、连续点击及切换应用后点回复验，并确认“两种窗口都正常”。最终包已做上述桌面验收；设置往返、拖动、最小化/恢复等未在此轮逐项复验，不据此宣称全平台验收完成。
+
+后续涉及窗口、焦点、拖动、尺寸或启动逻辑的修改，发布前须按以下步骤做真实桌面验收，不能用浏览器或源代码匹配替代：
+
+1. 从最终 RPM 核对版本、release、校验和及实际运行的二进制；在未指定 `GDK_BACKEND` 的 GNOME Wayland 会话启动，确认日志为 `GdkWaylandDisplay`。
+2. 普通窗口和小窗各测试开始/继续、真实键盘输入、连续点击内容区，以及切到其他应用后重新点回；窗口不得因内容点击下沉或失去输入。
+3. 检查设置往返、快捷键录制、拖动、最小化/恢复及置顶可用状态。记录测试后端和结果；未实际执行的项目保持待验收。
+
 ## 验证范围
 
 网页预览和本机测试不能代替各平台桌面窗口、真实中文输入法、多显示器、全屏覆盖和签名安装包的实机验收。

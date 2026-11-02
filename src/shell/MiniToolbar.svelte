@@ -3,16 +3,18 @@
   import MiniWindowIcon from './MiniWindowIcon.svelte';
 
   let {
-    t, isTauri, pinned, dragWindow, togglePinned, minimize, close, restoreWindow,
+    t, isTauri, pinned, pinSupported, dragWindow, togglePinned, minimize, close, restoreWindow, restoreAria,
   }: {
     t: Messages;
     isTauri: boolean;
     pinned: boolean;
+    pinSupported: boolean;
     dragWindow: (event: MouseEvent) => void | Promise<void>;
     togglePinned: () => void | Promise<void>;
     minimize: () => void | Promise<void>;
     close: () => void | Promise<void>;
     restoreWindow: () => void | Promise<void>;
+    restoreAria: string;
   } = $props();
 </script>
 
@@ -29,11 +31,11 @@
   </div>
   <div class="mini-toolbar-group">
     {#if isTauri}
-      <button class="mini-toolbar-button mini-toolbar-aux" class:pinned type="button" aria-label={pinned ? t.unpin : t.pin} title={pinned ? t.unpin : t.pin} aria-pressed={pinned} onclick={() => void togglePinned()}>
+      <button class="mini-toolbar-button mini-toolbar-aux" class:pinned type="button" disabled={!pinSupported} aria-label={pinSupported ? pinned ? t.unpin : t.pin : t.pinUnsupported} title={pinSupported ? pinned ? t.unpin : t.pin : t.pinUnsupported} aria-pressed={pinned} onclick={() => void togglePinned()}>
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4h8l-1.5 7 3.5 4H6l3.5-4L8 4Zm4 11v5" /></svg>
       </button>
     {/if}
-    <button class="mini-toolbar-button restore-window" type="button" aria-label={t.exitMiniWindow} title={t.exitMiniWindow} aria-keyshortcuts="Control+Shift+M Meta+Shift+M" onclick={() => void restoreWindow()}>
+    <button class="mini-toolbar-button restore-window" type="button" aria-label={t.exitMiniWindow} title={t.exitMiniWindow} aria-keyshortcuts={restoreAria} onclick={() => void restoreWindow()}>
       <MiniWindowIcon restore />
     </button>
   </div>

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createDeferredFocus } from '../src/deferred-focus';
+import { createDeferredFocus, focusWindowOnPress } from '../src/deferred-focus';
 
 test('click and release handlers finish before practice focus returns', context => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
@@ -42,4 +42,15 @@ test('the main desktop window is permitted to recover native focus', () => {
   const capability = JSON.parse(readFileSync(new URL('../src-tauri/capabilities/default.json', import.meta.url), 'utf8'));
   assert.ok(capability.windows.includes('main'));
   assert.ok(capability.permissions.includes('core:window:allow-set-focus'));
+});
+
+test('a pointer press requests native focus without waiting for the click', () => {
+  let focusCalls = 0;
+  focusWindowOnPress({ setFocus: async () => { focusCalls += 1; } });
+  assert.equal(focusCalls, 1);
+});
+
+test('a missing or rejected native focus request does not break the press', () => {
+  assert.doesNotThrow(() => focusWindowOnPress(undefined));
+  assert.doesNotThrow(() => focusWindowOnPress({ setFocus: () => Promise.reject(new Error('denied')) }));
 });
