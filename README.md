@@ -70,7 +70,7 @@ npm ci
 npm run web:dev
 ```
 
-打开 **http://127.0.0.1:6670/**。网页使用独立的演示进度，不读写桌面词本；不模拟原生窗口、文件导入或 Agent 配置写入。
+打开 [http://127.0.0.1:6670/](http://127.0.0.1:6670/)。网页使用独立的演示进度，不读写桌面词本；不模拟原生窗口、文件导入或 Agent 配置写入。
 
 桌面开发另需 Rust stable 和当前系统的 WebView 依赖，使用 `npm run dev` 启动。检查使用 `npm test`、`npm run build`。技术栈为 Tauri 2、Svelte、TypeScript 和 Rust；系统依赖与打包步骤见 [产品与技术范围](docs/design.md)及 [CI 构建脚本](.github/scripts/build-rpm.sh)。
 
