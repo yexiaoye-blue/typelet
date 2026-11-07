@@ -1,121 +1,83 @@
-# Typelet
+<div align="center">
+  <img src="public/favicon.svg" width="56" height="56" alt="Typelet">
+  <h1>Typelet</h1>
+  <p>等待 Agent 时，随手练一段句子或几个单词。</p>
+  <p><a href="https://github.com/yexiaoye-blue/typelet/releases">下载安装</a> · <a href="#快速开始">快速开始</a> · <a href="docs/README.md">文档</a> · <a href="https://github.com/yexiaoye-blue/typelet/issues">问题反馈</a></p>
+  <img src="docs/images/practice.png" width="420" alt="Typelet 深色网页预览：圆角展示框中的句子练习界面">
+  <p><sub>深色网页预览 · 内置演示数据 · 非原生桌面截图</sub></p>
+</div>
 
-一个小巧的跨平台桌面悬浮打字工具。等待 Agent 完成任务时，随手练一段句子或单词。
+## 功能
 
-A small cross-platform typing window for the time you spend waiting on an agent.
+- **句子与单词**：内置电影台词、CET4_3，支持导入文章和词表。
+- **练习反馈**：输入标记、WPM、正确率、分章成绩与进度记忆。
+- **桌面小窗**：工作间隙随时开始，离开窗口自动暂停。
+- **按你的习惯**：可调整快捷键、字体、外观、朗读和按键音。
+- **Agent 唤起**：Codex、Cursor 提交任务时自动显示应用。
 
-![练习首页](docs/images/practice.png)
+## 下载安装
 
-## 当前功能
+从 [Releases](https://github.com/yexiaoye-blue/typelet/releases) 下载与你的系统和架构对应的安装包。Preview 来自 `develop`，文件名标明来源提交。
 
-- 悬浮窗默认 380 × 450，可拖动，在支持的桌面环境中可置顶。已经在运行时再次启动，会唤起原来的窗口。
-- 句子和单词两种模式。句子按电影或导入的文章分章；单词按每 20 个词一章。
-- 句子内置电影台词，带中文释义。单词内置 CET4_3，显示音标和释义。
-- 拼对后自动进入下一项。本章最后一项完成后暂停，显示本章的 WPM、正确率、用时，并放一次彩屑。回车或「下一章」进入下一章并开始。
-- 单词可在开始时朗读，拼对后读下一个。口音可选英音或美音，优先使用有道读音，失败时改用系统语音。这个行为可以在设置里关掉。
-- 设置里可以换按键音色，并分别调整朗读和按键音的音量。按键音只在输入练习文字时播放。音色来自 Qwerty Learner 使用的 kbsim 录音。
-- 未开始或暂停时，练习区会模糊，并提示按任意键继续。窗口失去焦点时自动暂停。
-- 打到一句或一个词的末尾后，即使中间有错，也可以按回车进入下一项。
-- 速度标成 WPM，按本章用时里的正确字符数计算，不是只算当前这一项。
-- 词本有单独一页，可以切换预置内容、导入文章或词表，也可以移除导入的内容。
-- 外观、界面语言和练习字体可跟随系统，也可手动选择。设置里可以打开 Codex、Cursor 的自动唤起；DeepSeek Harness 仍在等待可用的 hook。
+| 系统 | 安装包 |
+| --- | --- |
+| Windows | `.msi` / `-setup.exe` |
+| Fedora | `.rpm` |
+| Debian / Ubuntu | `.deb` |
+| 其他 Linux 桌面 | `.AppImage` |
 
-右上角齿轮或按默认快捷键 `Ctrl + ,`（macOS 为 `⌘ + ,`）进入设置。点击设置里的「快捷键」入口进入独立页面，可以搜索、查看和修改打开设置、切换小窗以及项目/章节导航的组合键。点击组合键后直接按下新快捷键，按 `Esc` 取消；支持冲突提示、单项或全部恢复默认，修改自动保存在本机。练习中 `Esc` 暂停、章节完成后 `Enter` 继续为固定操作。练习正文不可选中。点击发音按钮后，焦点会回到输入区，可以直接继续打。
+当前提供 `x86_64`、`aarch64` 构建。macOS 暂无预编译包；Windows 安装包尚未配置发布签名。Linux Wayland 的置顶能力受 GTK 3 限制，详见 [平台边界](docs/design.md)。
 
-Linux 窗口使用 GTK 为当前桌面选择的后端，并遵循显式设置的 `GDK_BACKEND`。在 GNOME Wayland 中保持原生 Wayland，避免为置顶强制切换 XWayland 后出现点击失焦。GTK 3 的 Wayland 后端不支持置顶，此时按钮禁用并说明原因。启动日志会输出实际后端和置顶支持状态，便于核对安装包的运行环境。
+<details>
+<summary>Fedora：安装或升级本地 RPM</summary>
 
-## 导入数据
+将 `typelet.rpm` 替换为下载的文件名：
 
-导入在词本页完成：先预览，确认后才写入本机。网页预览不能模拟文件选择。桌面端把导入结果和当前练到的条目记在应用数据目录的 `content.json` 里，不保存打到一半的按键。
+```bash
+sudo dnf install ./typelet.rpm
+```
 
-### 句子
+新版本使用 `install` 或 `upgrade`；`reinstall` 适用于已安装的同一版本。其他安装说明见 [使用指南](docs/getting-started.md)。
 
-UTF-8 纯文本，扩展名 `.txt`。一个文件是一篇文章，文件名作为标题。不使用 JSON 或表格包装。
+</details>
 
-解析时去掉 BOM，把换行收成空格，再按 `.` `!` `?` `。` `！` `？` 切句。小数点、`Mr.` `Mrs.` `Ms.` `Dr.` `Prof.` `Sr.` `Jr.` `St.` `vs.` `e.g.` `i.e.` `etc.` 不会被切开。句末的引号和括号留在当前句里。正文为空时导入失败。导入的文章整篇算一章。
+## 快速开始
 
-~~~text
-You have power over your mind—not outside events. Realize this, and you will find strength.
+1. 打开设置，选择「句子」或「单词」以及要练习的词本。
+2. 点击开始或按任意键输入；拼对自动进入下一项，章末显示成绩。
+3. 练习中按 `Esc` 暂停，章末按 `Enter` 开始下一章。
 
-The happiness of your life depends upon the quality of your thoughts.
-~~~
+`Ctrl/⌘ + ,` 打开设置，`Ctrl/⌘ + Shift + M` 切换小窗。进入「设置 → 快捷键」可以自定义组合键。
 
-不直接导入 EPUB、PDF、DOCX 或 HTML。
+## 精选界面
 
-### 单词
+<table>
+  <tr><th>单词练习</th><th>快捷键设置</th></tr>
+  <tr>
+    <td valign="top"><a href="docs/images/word-practice.png"><img src="docs/images/word-practice.png" width="240" alt="Typelet 深色网页预览：单词、音标和释义"></a></td>
+    <td valign="top"><a href="docs/images/shortcuts.png"><img src="docs/images/shortcuts.png" width="240" alt="Typelet 深色网页预览：快捷键二级配置页"></a></td>
+  </tr>
+</table>
 
-UTF-8 制表符分隔文本，扩展名用 `.tsv`，也接受 `.txt`。第一行必须是表头。
+点击图片可查看原图。更多操作、[快捷键入口](docs/images/settings-shortcuts-entry.png)、[导入格式](docs/importing.md)和[数据保存](docs/getting-started.md)见文档。
 
-| 字段 | 必填 | 含义 |
-| --- | --- | --- |
-| name | 是 | 英文单词。不能为空，也不能包含空格 |
-| trans | 否 | 释义。多个释义用 `；` 或 `;` 分开 |
-| usphone | 否 | 美式音标 |
-| ukphone | 否 | 英式音标 |
+## 本地开发
 
-只接受这四个字段，字段顺序由表头决定。重复字段、缺少 `name`、某一行字段比表头多，都会报错并带上行号。同名单词保留第一次出现的那行，导入结果里会写出重复数量。没有词条时不导入。导入的词表同样每 20 个词一章。
+网页预览需要 Node.js 24 或更新版本：
 
-~~~text
-name	trans	usphone	ukphone
-abandon	放弃；遗弃	əˈbændən	əˈbændən
-ability	能力；才能	əˈbɪləti	əˈbɪləti
-~~~
-
-只有单词时可以只留 `name` 列：
-
-~~~text
-name
-abandon
-ability
-~~~
-
-不导入 Anki `.apkg`，也不把 Qwerty Learner 的 JSON 词库当作导入格式。
-
-## 内置词本
-
-电影台词来自知乎专栏《80 句经典英文电影台词》，按电影分成章节，数据在 `src-tauri/typing-core/data/movie_lines.json`。CET4_3 来自 [kajweb/dict](https://github.com/kajweb/dict)（数据来自有道 / 新东方），共 2607 个词，字段是 `name`、`trans`、`usphone`、`ukphone`。它只用于本机练习，不要原样再发布这份词书。
-
-这两份 JSON 在打包时不会再被压缩空白。`cet4_3.json` 本来就是一行；`movie_lines.json` 也保持紧凑的一行，避免把缩进打进安装包。Rust 用 `include_str!` 原样编进程序，所以源文件的体积就是安装后占用的体积。
-
-## 技术栈
-
-- Tauri 2：窗口、置顶、单实例和打包。
-- Svelte + TypeScript：界面和输入。
-- Rust：切句、词表解析、匹配和统计。桌面练习以 Rust 的结果为准。
-- Vite：网页预览。预览使用同一份内置数据的 TypeScript 回退，不模拟本机文件导入。
-
-## 启动
-
-需要 Node.js 24 或更新版本、Rust stable，以及当前系统的 WebView。Linux 读取字体还需要 Fontconfig 和 FreeType。
-
-~~~bash
-npm install
-npm run dev
-~~~
-
-只开网页预览：
-
-~~~bash
+```bash
+npm ci
 npm run web:dev
-~~~
+```
 
-地址是 `http://127.0.0.1:6670/`。检查用 `npm test`。打 RPM：
+打开 [http://127.0.0.1:6670/](http://127.0.0.1:6670/)。网页使用独立的演示进度，不读写桌面词本；不模拟原生窗口、文件导入或 Agent 配置写入。
 
-~~~bash
-npx tauri build --bundles rpm
-~~~
+桌面开发另需 Rust stable 和当前系统的 WebView 依赖，使用 `npm run dev` 启动。检查使用 `npm test`、`npm run build`。技术栈为 Tauri 2、Svelte、TypeScript 和 Rust；系统依赖与打包步骤见 [产品与技术范围](docs/design.md)及 [CI 构建脚本](.github/scripts/build-rpm.sh)。
 
-包在 `src-tauri/target/release/bundle/rpm/`。
+## 贡献与文档
 
-同一套界面和 Rust 核心用于 Windows、macOS 和 Linux，需要在对应系统上构建。macOS 和 Windows 的发布签名还没有配置。
+欢迎通过 [Issues](https://github.com/yexiaoye-blue/typelet/issues) 报告问题或讨论改进。提交修改前请运行相关检查；界面改动附上可复现步骤和截图。
 
-## 目录
+[使用指南](docs/getting-started.md) · [导入说明](docs/importing.md) · [文档索引](docs/README.md) · [产品范围](docs/design.md) · [后续规划](docs/roadmap.md)
 
-- `src/`：界面、样式和中英文文案。
-- `src-tauri/`：桌面外壳、Rust 打字核心和内置词本。
-- `packages/`：网页预览使用的 TypeScript 练习逻辑。
-- `public/`：图标和内置字体。
-- `docs/`：当前范围、规划和验证记录。
-- `tests/`：TypeScript 测试。Rust 测试在 `src-tauri/typing-core/`。
-
-[当前范围](docs/design.md) · [后续规划](docs/roadmap.md) · [验证记录](docs/validation.md)
+仓库目前未包含独立的 `LICENSE` 文件。内置词本与音色来源、使用边界见 [内容来源](docs/getting-started.md#内容来源)。
