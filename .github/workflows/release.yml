@@ -1,47 +1,205 @@
-name: Release
+name: Build and publish Typelet
 
-# Push v0.1.0 for a release, or v0.1.0-rc.1 for a prerelease.
-# A manual run builds the RPM and uploads it as an artifact only.
 on:
   push:
+    branches:
+      - develop
     tags:
       - "v*.*.*"
-  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  group: ${{ startsWith(github.ref, 'refs/tags/') && format('release-{0}', github.ref) || 'preview-develop' }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/develop' }}
 
 jobs:
-  rpm:
-    name: Fedora 44 RPM
+  metadata:
+    name: Validate release source
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      name: ${{ steps.release.outputs.name }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
-      - name: 取出代码
-        uses: actions/checkout@v4
+      - name: Check out source and tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
-      - name: 确认版本号
-        id: version
+      - name: Confirm stable release comes from main
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "Stable release tags must point to a commit contained in main." >&2
+            exit 1
+          }
+
+      - name: Set stable release metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: stable
         run: bash .github/scripts/release-version.sh
 
-      - name: 准备构建缓存
-        uses: actions/cache@v4
-        with:
-          path: |
-            .ci/cargo
-            .ci/rustup
-            src-tauri/target
-          key: fedora44-${{ hashFiles('src-tauri/Cargo.lock', 'src-tauri/typing-core/Cargo.lock', 'package-lock.json') }}
-          restore-keys: |
-            fedora44-
+      - name: Set preview release metadata
+        if: github.ref == 'refs/heads/develop'
+        id: preview
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          short_sha="${GITHUB_SHA::12}"
+          tag="preview-${version}-${short_sha}"
+          {
+            echo "tag=$tag"
+            echo "name=Typelet Preview $version ($short_sha)"
+            echo "prerelease=true"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: 在 Fedora 44 中打包
+      - name: Export release metadata
+        id: release
+        env:
+          STABLE_TAG: ${{ steps.stable.outputs.tag }}
+          STABLE_PRERELEASE: ${{ steps.stable.outputs.prerelease }}
+          PREVIEW_TAG: ${{ steps.preview.outputs.tag }}
+          PREVIEW_NAME: ${{ steps.preview.outputs.name }}
+          PREVIEW_PRERELEASE: ${{ steps.preview.outputs.prerelease }}
+        run: |
+          if [[ -n "$STABLE_TAG" ]]; then
+            {
+              echo "tag=$STABLE_TAG"
+              echo "name=Typelet $STABLE_TAG"
+              echo "prerelease=$STABLE_PRERELEASE"
+            } >> "$GITHUB_OUTPUT"
+          elif [[ -n "$PREVIEW_TAG" ]]; then
+            {
+              echo "tag=$PREVIEW_TAG"
+              echo "name=$PREVIEW_NAME"
+              echo "prerelease=$PREVIEW_PRERELEASE"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "Unsupported release ref: $GITHUB_REF" >&2
+            exit 1
+          fi
+
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri/typing-core -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Test typing-core and the frontend
+        run: npm test
+
+  build-linux:
+    name: Linux DEB and AppImage (${{ matrix.arch }})
+    needs:
+      - metadata
+      - test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            file \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libclang-dev \
+            libxdo-dev \
+            patchelf \
+            xdg-utils
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.arch }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build DEB and AppImage
+        run: npm run tauri:build -- --bundles deb,appimage
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: typelet-linux-deb-appimage-${{ matrix.arch }}
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  build-rpm:
+    name: Fedora RPM (${{ matrix.arch }})
+    needs:
+      - metadata
+      - test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Build RPM in Fedora 44
+        env:
+          DOCKER_PLATFORM: ${{ matrix.platform }}
         run: |
           mkdir -p .ci/cargo .ci/rustup
-          docker run --rm \
+          docker run --rm --platform "$DOCKER_PLATFORM" \
             -v "$PWD":/work \
             -w /work \
             -e CARGO_HOME=/work/.ci/cargo \
@@ -50,25 +208,172 @@ jobs:
             fedora:44 \
             bash -euo pipefail /work/.github/scripts/build-rpm.sh
 
-      - name: 修正文件所有者
+      - name: Fix generated file ownership
         run: sudo chown -R "$(id -u):$(id -g)" .ci src-tauri/target node_modules dist
 
-      - name: 上传构建附件
+      - name: Upload RPM
         uses: actions/upload-artifact@v4
         with:
-          name: typelet-rpm
+          name: typelet-linux-rpm-${{ matrix.arch }}
           path: src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
-      - name: 发布到 GitHub Release
-        if: steps.version.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
+  build-windows:
+    name: Windows MSI and NSIS installer (${{ matrix.arch }})
+    needs:
+      - metadata
+      - test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+          - arch: aarch64
+            runner: windows-11-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: Typelet ${{ steps.version.outputs.tag }}
-          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
-          generate_release_notes: true
-          body: |
-            Fedora 44 RPM。
-          files: src-tauri/target/release/bundle/rpm/*.rpm
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.arch }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build MSI and NSIS installer
+        run: npm run tauri:build -- --bundles msi,nsis
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: typelet-windows-${{ matrix.arch }}
+          path: |
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - metadata
+      - build-linux
+      - build-rpm
+      - build-windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source and tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download all platform packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: typelet-*
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Describe additions and fixes
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: python3 .github/scripts/release-notes.py > release-notes.md
+
+      - name: Name packages by platform and architecture
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          release_arch() {
+            local name
+            name=$(basename "$1")
+            case "$name" in
+              *aarch64*|*arm64*)
+                printf '%s\n' aarch64
+                ;;
+              *x86_64*|*amd64*|*_x64-*|*_x64_*)
+                printf '%s\n' x86_64
+                ;;
+              *)
+                echo "Cannot tell architecture from $name" >&2
+                return 1
+                ;;
+            esac
+          }
+
+          place() {
+            local src="$1" middle="$2" ext="$3" arch dest
+            arch=$(release_arch "$src")
+            dest="release-assets/typelet-${RELEASE_TAG}-${middle}-${arch}${ext}"
+            if [[ -e "$dest" ]]; then
+              echo "Duplicate package $dest from $src" >&2
+              exit 1
+            fi
+            cp "$src" "$dest"
+          }
+
+          while IFS= read -r -d '' file; do
+            place "$file" fedora .rpm
+          done < <(find release-artifacts -type f -name '*.rpm' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" linux .deb
+          done < <(find release-artifacts -type f -name '*.deb' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" linux .AppImage
+          done < <(find release-artifacts -type f -iname '*.appimage' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" windows .msi
+          done < <(find release-artifacts -type f -name '*.msi' -print0)
+          while IFS= read -r -d '' file; do
+            place "$file" windows -setup.exe
+          done < <(find release-artifacts -type f -name '*.exe' -print0)
+
+          expected=(
+            "typelet-${RELEASE_TAG}-fedora-x86_64.rpm"
+            "typelet-${RELEASE_TAG}-fedora-aarch64.rpm"
+            "typelet-${RELEASE_TAG}-linux-x86_64.deb"
+            "typelet-${RELEASE_TAG}-linux-aarch64.deb"
+            "typelet-${RELEASE_TAG}-linux-x86_64.AppImage"
+            "typelet-${RELEASE_TAG}-linux-aarch64.AppImage"
+            "typelet-${RELEASE_TAG}-windows-x86_64.msi"
+            "typelet-${RELEASE_TAG}-windows-aarch64.msi"
+            "typelet-${RELEASE_TAG}-windows-x86_64-setup.exe"
+            "typelet-${RELEASE_TAG}-windows-aarch64-setup.exe"
+          )
+          for name in "${expected[@]}"; do
+            test -f "release-assets/$name"
+          done
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 10
+
+      - name: Publish release and attach packages
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.metadata.outputs.name }}
+          prerelease: ${{ needs.metadata.outputs.prerelease }}
+          make_latest: ${{ needs.metadata.outputs.prerelease != 'true' }}
+          body_path: release-notes.md
+          overwrite_files: true
+          files: release-assets/*
           fail_on_unmatched_files: true

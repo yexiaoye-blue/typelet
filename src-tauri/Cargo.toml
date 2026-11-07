@@ -1,6 +1,6 @@
 [package]
 name = "typelet"
-version = "0.1.0"
+version = "0.1.1"
 description = "A small floating typing practice tool"
 authors = ["Typelet"]
 edition = "2021"
@@ -17,6 +17,13 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.4"
 tauri-plugin-single-instance = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18.2", features = ["pipewire"] }
+gtk = "0.18"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+cpal = "0.18.2"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

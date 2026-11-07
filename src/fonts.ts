@@ -29,3 +29,27 @@ export async function getSystemFonts(native: boolean): Promise<string[]> {
   if (!Array.isArray(values) || !values.every(value => typeof value === 'string')) throw new Error('Invalid font list');
   return [...new Set(values.map(value => value.trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
+
+export type FontChoice = { value: string; label: string };
+
+export function fontChoices(input: {
+  families: string[];
+  query: string;
+  draft: string;
+  builtinLabel: string;
+  systemLabel: string;
+}): FontChoice[] {
+  const query = input.query.trim().toLocaleLowerCase();
+  const matches = (label: string) => !query || label.toLocaleLowerCase().includes(query);
+  const choices: FontChoice[] = [];
+  if (matches(input.builtinLabel) || matches('noto sans mono')) choices.push({ value: bundledFont, label: input.builtinLabel });
+  if (matches(input.systemLabel)) choices.push({ value: 'system', label: input.systemLabel });
+  const draftFamily = input.draft.startsWith('font:') ? input.draft.slice(5) : '';
+  if (draftFamily && !input.families.includes(draftFamily) && matches(draftFamily)) {
+    choices.push({ value: input.draft, label: draftFamily });
+  }
+  for (const family of input.families) {
+    if (matches(family)) choices.push({ value: 'font:' + family, label: family });
+  }
+  return choices;
+}

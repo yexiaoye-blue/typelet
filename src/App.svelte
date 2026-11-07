@@ -2,33 +2,63 @@
   import { onMount, tick } from 'svelte';
   import confetti from 'canvas-confetti';
   import { invoke } from '@tauri-apps/api/core';
+  import { getVersion } from '@tauri-apps/api/app';
   import { open } from '@tauri-apps/plugin-dialog';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
   import {
     characters,
+    limitPracticeInput,
     previewAdvance,
     previewCatalog,
     previewReset,
     previewSelectCollection,
     previewSelectChapter,
+    previewSelectItem,
     previewSnapshot,
     previewUpdate,
+    setPreviewLayout,
     summarizeChapter,
     type ContentCatalogSnapshot,
     type ChapterWordResult,
     type PracticeMode,
+    type PracticeOrder,
     type PracticeSnapshot,
   } from '../packages/core/typing';
   import { en, zh } from './i18n';
-  import { bundledFont, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
+  import { version as packagedVersion } from '../package.json';
+  import { bundledFont, fontChoices, fontStack, getSystemFonts, loadFontPreference, persistFontPreference } from './fonts';
   import { ScrollMemory } from './scroll-memory';
-  import { keySoundPacks, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
+  import { keySoundPacks, keysAudible, loadSoundPreference, persistSoundPreference, playKeySound, preloadKeySound, readingAudible, traceKeySound, unlockKeySound, type SoundPreference } from './key-sounds';
+  import type { SettingsSelectOption } from './components/SettingsSelect.svelte';
+  import {
+    detectSystemLocale,
+    loadAutoAdvanceWords,
+    loadChapterLength,
+    loadLocalePreference,
+    loadMiniWindow,
+    loadPracticeOrder,
+    loadPronunciationPreference,
+    loadThemePreference,
+    type Locale,
+    type LocalePreference,
+    type PronunciationPreference,
+    type Theme,
+    type ThemePreference,
+  } from './preferences';
+  import PracticePage from './practice/PracticePage.svelte';
+  import SettingsPage from './settings/SettingsPage.svelte';
+  import TitleBar from './shell/TitleBar.svelte';
+  import MiniToolbar from './shell/MiniToolbar.svelte';
+  import { createDeferredFocus, focusWindowOnPress } from './deferred-focus';
+  import {
+    detectPlatform,
+    loadShortcuts,
+    saveShortcuts,
+    shortcutAriaLabel,
+    shortcutMatches,
+    type Shortcuts,
+  } from './shortcuts';
 
-  type Locale = 'zh' | 'en';
-  type LocalePreference = 'system' | Locale;
-  type Theme = 'light' | 'dark';
-  type ThemePreference = 'system' | Theme;
-  type PronunciationPreference = 'uk' | 'us';
   type Statistics = PracticeSnapshot['stats'];
   type AgentId = 'codex' | 'cursor' | 'dsh';
   type AgentSummary = { id: AgentId; name: string; enabled: boolean; supported: boolean; configPath: string; format: string; event: string };
@@ -38,7 +68,10 @@
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const appWindow = isTauri ? getCurrentWindow() : undefined;
+  const wordMiniHeight = 228;
+  const sentenceMiniHeight = 280;
   type ImportResult = { report: { title: string; count: number; duplicateCount: number; firstItem: string | null }; catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot };
+  setPreviewLayout(loadChapterLength(), loadPracticeOrder());
   const emptySnapshot = previewSnapshot();
 
   let localePreference = $state<LocalePreference>(loadLocalePreference());
@@ -46,9 +79,25 @@
   let themePreference = $state<ThemePreference>(loadThemePreference());
   let pronunciationPreference = $state<PronunciationPreference>(loadPronunciationPreference());
   let autoAdvanceWords = $state(loadAutoAdvanceWords());
+  let chapterLength = $state(loadChapterLength());
+  let practiceOrder = $state<PracticeOrder>(loadPracticeOrder());
   let sound = $state<SoundPreference>(loadSoundPreference());
+  let appVersion = $state(packagedVersion);
   let systemTheme = $state<Theme>(window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   let view = $state<'practice' | 'settings'>('practice');
+  let miniWindow = $state(loadMiniWindow());
+  let savedWindowSize: { width: number; height: number } | null = null;
+  let windowModeQueue: Promise<void> = Promise.resolve();
+  let windowSizeGeneration = 0;
+  let practiceReady = false;
+  let focusActive = true;
+  let shortcuts = $state<Shortcuts>(loadShortcuts());
+  let shortcutRecording = $state(false);
+  const shortcutPlatform = detectPlatform();
+  const practiceFocus = createDeferredFocus(() => {
+    if (!focusActive || view !== 'practice' || !document.hasFocus()) return;
+    if (input && document.activeElement !== input) input.focus({ preventScroll: true });
+  });
   let snapshot = $state<PracticeSnapshot>(emptySnapshot);
   let libraries = $derived(snapshot.mode === 'sentence' ? catalog.articles : catalog.wordBooks);
   let catalog = $state<ContentCatalogSnapshot>(previewCatalog());
@@ -58,12 +107,14 @@
   let focused = $state(false);
   let elapsed = $state(0);
   let pinned = $state(false);
+  let pinSupported = $state(false);
   let pinGeneration = 0;
   let composing = $state(false);
   let surfacePressed = $state(false);
   let input = $state<HTMLTextAreaElement | undefined>();
   let backButton = $state<HTMLButtonElement | undefined>();
   let settingsPage = $state<HTMLElement | undefined>();
+  let shortcutEntry = $state<HTMLButtonElement | undefined>();
   const settingsScroll = new ScrollMemory();
 
   let textDisplay = $state<HTMLDivElement | undefined>();
@@ -73,7 +124,11 @@
   let resizeObserver: ResizeObserver | undefined;
   let observedDisplay: HTMLDivElement | undefined;
   let fontPreference = $state(loadFontPreference());
-  let fontSearch = $state('');
+  let fontDraft = $state(loadFontPreference());
+  let fontQuery = $state('');
+  let fontMenuOpen = $state(false);
+  let fontHighlight = $state(-1);
+  let fontField = $state<HTMLDivElement>();
   let systemFonts = $state<string[]>([]);
   let fontsLoading = $state(false);
   let fontsLoaded = $state(false);
@@ -84,6 +139,7 @@
   let agentError = $state('');
   let selectedAgent = $state<AgentId | null>(null);
   let libraryOpen = $state(false);
+  let shortcutsOpen = $state(false);
   let agentDetail = $state<AgentDetail | null>(null);
   let agentDetailDraft = $state('');
   let agentDetailLoading = $state(false);
@@ -99,6 +155,7 @@
   let chapterWords = $state<Record<number, ChapterWordResult>>({});
   let chapterPaused = $state(false);
   let practicePhase = $state<'idle' | 'running' | 'paused'>('idle');
+  let allowIncompleteNext = $state(false);
   let chapterContinuation = false;
   let activeAudio: HTMLAudioElement | undefined;
   let pronunciationGeneration = 0;
@@ -111,6 +168,9 @@
   let locale = $derived<Locale>(localePreference === 'system' ? systemLocale : localePreference);
   let resolvedTheme = $derived<Theme>(themePreference === 'system' ? systemTheme : themePreference);
   let t = $derived(locale === 'zh' ? zh : en);
+  let miniHeight = $derived(snapshot.mode === 'sentence' ? sentenceMiniHeight : wordMiniHeight);
+  let openSettingsAria = $derived(shortcutAriaLabel(shortcuts.openSettings, shortcutPlatform));
+  let toggleMiniWindowAria = $derived(shortcutAriaLabel(shortcuts.toggleMiniWindow, shortcutPlatform));
   let builtinLibraries = $derived(libraries.filter((item) => !item.removable));
   let importedLibraries = $derived(libraries.filter((item) => item.removable));
   let target = $derived(snapshot.target);
@@ -136,11 +196,33 @@
       : t.chapterPrefix + ' ' + snapshot.chapterIndex + ' ' + t.chapterComplete);
   let chapterResultUnit = $derived(snapshot.mode === 'sentence' ? t.chapterSentences : t.chapterWords);
   let typed = $derived(characters(committedDraft));
-  let filteredFonts = $derived(systemFonts.filter(family => family.toLocaleLowerCase().includes(fontSearch.trim().toLocaleLowerCase())));
+  const keySoundOptions: SettingsSelectOption[] = keySoundPacks.map(pack => ({ value: pack.id, label: pack.id }));
+  let fontChoiceList = $derived(fontChoices({
+    families: systemFonts,
+    query: fontMenuOpen ? fontQuery : '',
+    draft: fontDraft,
+    builtinLabel: 'Noto Sans Mono · ' + t.builtIn,
+    systemLabel: t.systemFont,
+  }));
+  let fontPreview = $derived(fontMenuOpen && fontChoiceList[fontHighlight] ? fontChoiceList[fontHighlight].value : fontDraft);
+  let fontMenuMaxHeight = $state(168);
   let running = $derived(view === 'practice' && practicePhase === 'running' && focused && snapshot.practice.attempts > 0 && !stats.done);
   let awaitingStart = $derived(practicePhase === 'idle' && !chapterPaused);
+  let itemReachedEnd = $derived(snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length);
+  let canGoPreviousItem = $derived(!chapterPaused && snapshot.chapterItemIndex > 1);
+  let canGoNextItem = $derived(!chapterPaused && snapshot.chapterItemIndex < snapshot.chapterItemCount && (stats.done || itemReachedEnd || allowIncompleteNext));
+  let canGoPreviousChapter = $derived(snapshot.chapterIndex > 1);
+  let canGoNextChapter = $derived(snapshot.chapterIndex < snapshot.chapterCount);
+  let chapterOptions = $derived(Array.from({ length: snapshot.chapterCount }, (_, index) => ({
+    value: String(index),
+    label: snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : ''),
+  })));
+  let chapterLengthMax = $derived(Math.max(1, snapshot.itemCount));
+  let chapterLengthMin = $derived(Math.min(10, chapterLengthMax));
+  let effectiveChapterLength = $derived(Math.min(chapterLengthMax, Math.max(chapterLengthMin, chapterLength)));
   let celebrationCanvas = $state<HTMLCanvasElement | undefined>();
   let celebratedChapter = '';
+  let celebrationBurst: ReturnType<typeof confetti.create> | undefined;
 
   $effect(() => {
     if (typeof document === 'undefined') return;
@@ -148,7 +230,7 @@
     document.documentElement.dataset.theme = resolvedTheme;
   });
   $effect(() => {
-    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText);
+    if (view === 'practice') void updateCaret(committedDraft, fontPreference, target, compositionText, miniWindow);
   });
   $effect(() => {
     if (view === 'settings' && !agentsLoaded) void loadAgents();
@@ -164,10 +246,29 @@
     if (!canvas || celebratedChapter === key) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     celebratedChapter = key;
-    const burst = confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
-    void burst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    // The canvas lives for the whole practice view; one burst instance per element.
+    celebrationBurst ??= confetti.create(canvas, { resize: true, useWorker: false, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 62, spread: 36, startVelocity: 16, origin: { x: 0.04, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
+    void celebrationBurst({ particleCount: 16, angle: 118, spread: 36, startVelocity: 16, origin: { x: 0.96, y: 0.7 }, scalar: 0.5, ticks: 100, gravity: 0.9, disableForReducedMotion: true });
   });
+
+  function handlePracticeNavigationKey(event: KeyboardEvent) {
+    if (event.defaultPrevented || view !== 'practice' || event.repeat || event.isComposing || shortcutRecording) return false;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[role="combobox"][aria-expanded="true"], [role="listbox"]')) return false;
+    if (target?.closest('select, input:not(#typing-capture), textarea:not(#typing-capture)')) return false;
+    const previousChapter = shortcutMatches(event, shortcuts.previousChapter, shortcutPlatform);
+    const nextChapter = shortcutMatches(event, shortcuts.nextChapter, shortcutPlatform);
+    const previousItem = shortcutMatches(event, shortcuts.previousItem, shortcutPlatform);
+    const nextItem = shortcutMatches(event, shortcuts.nextItem, shortcutPlatform);
+    if (!previousChapter && !nextChapter && !previousItem && !nextItem) return false;
+    event.preventDefault();
+    if (previousChapter) void navigateChapter(-1);
+    else if (nextChapter) void navigateChapter(1);
+    else if (previousItem) void navigateItem(-1);
+    else void navigateItem(1);
+    return true;
+  }
 
   onMount(() => {
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -179,6 +280,7 @@
     syncSystemLocale();
 
     const leaveApp = () => {
+      practiceFocus.cancel();
       focused = false;
       pausePractice();
     };
@@ -200,9 +302,12 @@
     window.addEventListener('languagechange', syncSystemLocale);
     document.addEventListener('visibilitychange', hidden);
     const startFromKey = (event: KeyboardEvent) => {
-      if (view !== 'practice') return;
+      if (event.defaultPrevented || shortcutRecording || view !== 'practice') return;
       if (chapterPaused) {
         if (event.key === 'Enter' && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey) {
+          // A focused chapter button keeps its own Enter activation.
+          const target = event.target as HTMLElement | null;
+          if (target?.closest('.practice-page button')) return;
           event.preventDefault();
           void continueAndStart();
         }
@@ -212,6 +317,7 @@
       if (event.isComposing || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Tab', 'Escape'].includes(event.key)) return;
       const target = event.target as HTMLElement | null;
+      if (target?.closest('[role="combobox"], [role="listbox"], .settings-select')) return;
       const practiceButton = target?.closest('.practice-page button');
       if (practiceButton) {
         if (event.key === 'Enter' || event.key === ' ') return;
@@ -222,8 +328,23 @@
       beginPractice();
     };
     const handleGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || shortcutRecording) return;
+      if (shortcutMatches(event, shortcuts.openSettings, shortcutPlatform)) {
+        event.preventDefault();
+        if (view !== 'settings') void openSettings();
+        return;
+      }
+      if (shortcutMatches(event, shortcuts.toggleMiniWindow, shortcutPlatform)) {
+        event.preventDefault();
+        void toggleMiniWindow();
+        return;
+      }
+      if (handlePracticeNavigationKey(event)) return;
       if (event.key !== 'Escape' || event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
       if (view === 'settings') {
+        // Escape inside a text field must not throw away unsaved edits by leaving settings.
+        const origin = event.target as HTMLElement | null;
+        if (origin?.closest('input, textarea, select, [role="combobox"], [role="listbox"]')) return;
         event.preventDefault();
         void navigateBack();
         return;
@@ -234,22 +355,32 @@
       }
     };
     preloadKeySound(sound.pack);
+    if (isTauri) {
+      void getVersion().then(version => { appVersion = version; }).catch(() => { /* Keep the packaged version. */ });
+    }
     const primeKeySound = () => unlockKeySound();
     window.addEventListener('pointerdown', primeKeySound, true);
     window.addEventListener('keydown', primeKeySound, true);
-    window.addEventListener('keydown', startFromKey);
     window.addEventListener('keydown', handleGlobalKeydown);
+    window.addEventListener('keydown', startFromKey);
     colorScheme.addEventListener?.('change', syncSystemTheme);
     const fontLayoutChanged = () => { void updateCaret(); };
     resizeObserver = new ResizeObserver(fontLayoutChanged);
     document.fonts.addEventListener('loadingdone', fontLayoutChanged);
-    void loadPractice().then(() => tick()).then(() => focusInput());
+    void loadPractice().then(() => tick()).then(() => {
+      practiceReady = true;
+      if (miniWindow) void scheduleWindowMode(true, miniHeight);
+      focusInput();
+    });
 
     if (appWindow) {
-      const pinRead = pinGeneration;
-      void appWindow.isAlwaysOnTop().then(value => {
+      void invoke<{ backend: string; pinSupported: boolean }>('get_window_platform').then(async platform => {
+        pinSupported = platform.pinSupported;
+        if (!pinSupported) return;
+        const pinRead = pinGeneration;
+        const value = await appWindow.isAlwaysOnTop();
         if (pinRead === pinGeneration) pinned = value;
-      });
+      }).catch(error => console.warn('Could not read window support:', error));
       void appWindow.onFocusChanged(({ payload: active }) => {
         if (!active) pausePractice();
       }).then(unlisten => { unlistenFocus = unlisten; });
@@ -264,6 +395,8 @@
 
     timer = setInterval(updateClock, 200);
     return () => {
+      focusActive = false;
+      practiceFocus.cancel();
       if (timer) clearInterval(timer);
       window.removeEventListener('blur', leaveApp);
       window.removeEventListener('pointerup', releaseSurface);
@@ -291,28 +424,9 @@
     }
   });
 
-  function detectSystemLocale(): Locale {
-    const language = typeof navigator !== 'undefined' ? navigator.language.toLowerCase() : 'en';
-    return language.startsWith('zh') ? 'zh' : 'en';
-  }
-
-  function loadLocalePreference(): LocalePreference {
-    try {
-      const value = localStorage.getItem('typelet.locale.preference');
-      return value === 'zh' || value === 'en' || value === 'system' ? value : 'system';
-    } catch { return 'system'; }
-  }
-
   function persistLocalePreference(value: LocalePreference) {
     localePreference = value;
     try { localStorage.setItem('typelet.locale.preference', value); } catch { /* browser storage may be unavailable */ }
-  }
-
-  function loadThemePreference(): ThemePreference {
-    try {
-      const value = localStorage.getItem('typelet.theme.preference');
-      return value === 'light' || value === 'dark' || value === 'system' ? value : 'system';
-    } catch { return 'system'; }
   }
 
   function persistThemePreference(value: ThemePreference) {
@@ -320,21 +434,9 @@
     try { localStorage.setItem('typelet.theme.preference', value); } catch { /* browser storage may be unavailable */ }
   }
 
-  function loadPronunciationPreference(): PronunciationPreference {
-    try {
-      return localStorage.getItem('typelet.word.pronunciation') === 'us' ? 'us' : 'uk';
-    } catch { return 'uk'; }
-  }
-
   function persistPronunciationPreference(value: PronunciationPreference) {
     pronunciationPreference = value;
     try { localStorage.setItem('typelet.word.pronunciation', value); } catch { /* browser storage may be unavailable */ }
-  }
-
-  function loadAutoAdvanceWords(): boolean {
-    try {
-      return localStorage.getItem('typelet.word.autoAdvance') !== 'false';
-    } catch { return true; }
   }
 
   function persistAutoAdvanceWords(value: boolean) {
@@ -345,6 +447,87 @@
     else stopPronunciation();
   }
 
+  function commitChapterLength(input: HTMLInputElement) {
+    const parsed = Number(input.value.trim());
+    if (!input.value.trim() || !Number.isInteger(parsed) || chapterLengthMin === chapterLengthMax) {
+      input.value = String(effectiveChapterLength);
+      return;
+    }
+    const next = Math.min(chapterLengthMax, Math.max(chapterLengthMin, parsed));
+    input.value = String(next);
+    if (next === effectiveChapterLength && next === chapterLength) return;
+    void applyPracticeLayout(next, practiceOrder);
+  }
+
+  function stepChapterLength(direction: -1 | 1) {
+    if (chapterLengthMin === chapterLengthMax) return;
+    const next = Math.min(chapterLengthMax, Math.max(chapterLengthMin, effectiveChapterLength + direction));
+    if (next === effectiveChapterLength) return;
+    void applyPracticeLayout(next, practiceOrder);
+  }
+
+  function onChapterLengthKeydown(event: KeyboardEvent) {
+    if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+      event.preventDefault();
+      stepChapterLength(event.key === 'ArrowUp' ? 1 : -1);
+      return;
+    }
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    const input = event.currentTarget;
+    if (input instanceof HTMLInputElement) commitChapterLength(input);
+  }
+
+  function choosePracticeOrder(order: PracticeOrder) {
+    if (order === practiceOrder) return;
+    void applyPracticeLayout(chapterLength, order);
+  }
+
+  async function applyPracticeLayout(nextLength: number, nextOrder: PracticeOrder) {
+    const previous = snapshot;
+    chapterLength = nextLength;
+    practiceOrder = nextOrder;
+    try {
+      localStorage.setItem('typelet.practice.chapterLength', String(nextLength));
+      localStorage.setItem('typelet.practice.order', nextOrder);
+    } catch { /* browser storage may be unavailable */ }
+    try {
+      if (isTauri) {
+        const next = await invoke<{ catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot }>('set_practice_layout', { chapterLength: nextLength, order: nextOrder });
+        catalog = next.catalog;
+        adoptLayoutSnapshot(previous, next.snapshot);
+      } else {
+        setPreviewLayout(nextLength, nextOrder);
+        const cursor = Math.max(0, previous.itemIndex - 1);
+        const kept = previewSnapshot(previous.mode, previous.collectionId, cursor, previous.practice);
+        const changed = kept.target !== previous.target;
+        const applied = changed ? previewSnapshot(previous.mode, previous.collectionId, cursor) : kept;
+        const progress = loadWebProgress();
+        catalog = previewCatalog(applied.mode, applied.mode === 'sentence' ? applied.collectionId : progress.sentenceId, applied.mode === 'word' ? applied.collectionId : progress.wordBookId);
+        adoptLayoutSnapshot(previous, applied);
+      }
+    } catch (error) {
+      importError = String(error);
+    }
+  }
+
+  function adoptLayoutSnapshot(previous: PracticeSnapshot, next: PracticeSnapshot) {
+    const targetChanged = next.target !== previous.target || next.collectionId !== previous.collectionId;
+    const chapterChanged = targetChanged || next.chapterIndex !== previous.chapterIndex;
+    if (chapterChanged) {
+      invalidateCompletion();
+      requestId += 1;
+      allowIncompleteNext = false;
+      resetPracticeClock();
+      chapterKey = '';
+    }
+    if (targetChanged) {
+      draft = '';
+      committedDraft = '';
+    }
+    applySnapshot(next, targetChanged);
+  }
+
   function speechLevel() {
     return sound.speechVolume / 100;
   }
@@ -352,54 +535,165 @@
   function rememberSound(next: SoundPreference) {
     sound = next;
     persistSoundPreference(next);
+    if (!readingAudible(sound)) {
+      stopPronunciation();
+      return;
+    }
     if (activeAudio) activeAudio.volume = speechLevel();
   }
 
   let keyPreviewAt = 0;
   function previewKeySound(force = false) {
-    if (!sound.keyEnabled || sound.keyVolume <= 0) return;
+    if (!keysAudible(sound)) return;
     const now = performance.now();
     if (!force && now - keyPreviewAt < 80) return;
     keyPreviewAt = now;
     playKeySound(sound.pack, sound.keyVolume);
   }
 
+  function setSoundEnabled(enabled: boolean) {
+    rememberSound({ ...sound, enabled });
+    if (enabled) previewKeySound(true);
+  }
+
+  function setSpeechMuted(muted: boolean) {
+    rememberSound({ ...sound, speechMuted: muted });
+  }
+
   function setSpeechVolume(event: Event) {
     const speechVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
     if (!Number.isFinite(speechVolume)) return;
-    rememberSound({ ...sound, speechVolume: Math.max(0, Math.min(100, speechVolume)) });
-    if (sound.speechVolume <= 0) stopPronunciation();
+    rememberSound({ ...sound, speechMuted: false, speechVolume: Math.max(0, Math.min(100, speechVolume)) });
   }
 
-  function setKeyEnabled(enabled: boolean) {
-    rememberSound({ ...sound, keyEnabled: enabled });
-    if (enabled) previewKeySound(true);
+  function setKeyMuted(muted: boolean) {
+    rememberSound({ ...sound, keyMuted: muted });
+    if (!muted) previewKeySound(true);
   }
 
   function setKeyVolume(event: Event) {
     const keyVolume = Math.round((event.currentTarget as HTMLInputElement).valueAsNumber);
     if (!Number.isFinite(keyVolume)) return;
-    rememberSound({ ...sound, keyVolume: Math.max(0, Math.min(100, keyVolume)) });
+    rememberSound({ ...sound, keyMuted: false, keyVolume: Math.max(0, Math.min(100, keyVolume)) });
     previewKeySound();
   }
 
-  function setKeyPack(event: Event) {
-    const pack = (event.currentTarget as HTMLSelectElement).value;
+  function setKeyPack(pack: string) {
     if (!keySoundPacks.some(item => item.id === pack)) return;
     rememberSound({ ...sound, pack });
     previewKeySound(true);
   }
 
-  function playPracticeKey(previous: string, next: string) {
-    if (!sound.keyEnabled || sound.keyVolume <= 0 || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
+  function playPracticeKey(previous: string, next: string, occurredAt: number) {
+    if (!keysAudible(sound) || view !== 'practice' || practicePhase !== 'running' || chapterPaused) return;
     if (next.length <= previous.length || !next.startsWith(previous)) return;
+    const lag = Math.round(keyEventLag(occurredAt));
+    const added = next.length - previous.length;
+    if (lag > 70) {
+      traceKeySound('practice-drop-late', { lag, added });
+      return;
+    }
+    traceKeySound('practice-key', { lag, added });
     playKeySound(sound.pack, sound.keyVolume);
   }
 
+  function keyEventLag(occurredAt: number) {
+    const now = performance.now();
+    if (!Number.isFinite(occurredAt) || occurredAt <= 0) return 0;
+    // Some WebKit builds report event.timeStamp in seconds. Treat a tiny
+    // stamp as seconds so a clock mismatch cannot silence every click.
+    const stamp = occurredAt < now / 20 ? occurredAt * 1000 : occurredAt;
+    return now - stamp;
+  }
 
-  function selectFont(value: string) {
-    fontPreference = value;
-    persistFontPreference(value);
+
+  function fontLabel(value: string) {
+    if (value === bundledFont) return 'Noto Sans Mono · ' + t.builtIn;
+    if (value === 'system') return t.systemFont;
+    return value.startsWith('font:') ? value.slice(5) : value;
+  }
+
+  function openFontMenu() {
+    placeFontMenu();
+    fontMenuOpen = true;
+    fontHighlight = Math.max(0, fontChoiceList.findIndex(choice => choice.value === fontDraft));
+  }
+
+  function placeFontMenu() {
+    const field = fontField?.querySelector('.font-field');
+    const page = fontField?.closest('.settings-page');
+    if (!(field instanceof HTMLElement) || !(page instanceof HTMLElement)) return;
+    const minimum = 148;
+    const fieldBox = field.getBoundingClientRect();
+    const pageBox = page.getBoundingClientRect();
+    let room = pageBox.bottom - fieldBox.bottom - 10;
+    if (room < minimum) {
+      page.scrollTop += minimum - room;
+      room = page.getBoundingClientRect().bottom - field.getBoundingClientRect().bottom - 10;
+    }
+    fontMenuMaxHeight = Math.max(96, Math.min(200, Math.floor(room)));
+  }
+
+  function closeFontMenu() {
+    fontMenuOpen = false;
+    fontQuery = '';
+    fontHighlight = -1;
+  }
+
+  function chooseFont(value: string) {
+    fontDraft = value;
+    closeFontMenu();
+  }
+
+  function applyFont() {
+    if (fontDraft === fontPreference) return;
+    fontPreference = fontDraft;
+    persistFontPreference(fontDraft);
+  }
+
+  function onFontFocusOut(event: FocusEvent) {
+    const next = event.relatedTarget;
+    if (next instanceof Node && fontField?.contains(next)) return;
+    closeFontMenu();
+  }
+
+  function onFontInput(event: Event) {
+    fontQuery = (event.currentTarget as HTMLInputElement).value;
+    fontMenuOpen = true;
+    fontHighlight = 0;
+  }
+
+  async function moveFontHighlight(next: number) {
+    fontHighlight = next;
+    await tick();
+    const menu = fontField?.querySelector<HTMLElement>('.font-menu');
+    const option = menu?.querySelectorAll<HTMLButtonElement>('button')[next];
+    if (!menu || !option) return;
+    const top = option.offsetTop;
+    const bottom = top + option.offsetHeight;
+    if (top < menu.scrollTop) menu.scrollTop = top;
+    else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
+  }
+
+  function onFontKeydown(event: KeyboardEvent) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (!fontMenuOpen) {
+        openFontMenu();
+        return;
+      }
+      void moveFontHighlight(Math.min(fontChoiceList.length - 1, fontHighlight + 1));
+    } else if (event.key === 'ArrowUp' && fontMenuOpen) {
+      event.preventDefault();
+      void moveFontHighlight(Math.max(0, fontHighlight - 1));
+    } else if (event.key === 'Enter' && fontMenuOpen && fontChoiceList[fontHighlight]) {
+      event.preventDefault();
+      chooseFont(fontChoiceList[fontHighlight].value);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeFontMenu();
+    }
   }
 
   function previewAgents(): AgentSummary[] {
@@ -448,7 +742,31 @@
   function currentSettingsPage() {
     if (selectedAgent) return 'agent:' + selectedAgent;
     if (libraryOpen) return 'library';
+    if (shortcutsOpen) return 'shortcuts';
     return 'settings';
+  }
+
+  async function openShortcutSettings() {
+    rememberSettingsScroll();
+    shortcutsOpen = true;
+    await restoreSettingsScroll('shortcuts');
+    backButton?.focus({ preventScroll: true });
+  }
+
+  async function closeShortcutSettings() {
+    rememberSettingsScroll();
+    shortcutsOpen = false;
+    await restoreSettingsScroll('settings');
+    shortcutEntry?.focus({ preventScroll: true });
+  }
+
+  function updateShortcuts(next: Shortcuts) {
+    shortcuts = next;
+    saveShortcuts(next);
+  }
+
+  function setShortcutRecording(active: boolean) {
+    shortcutRecording = active;
   }
 
   function rememberSettingsScroll() {
@@ -524,7 +842,13 @@
   }
 
   function focusInput() {
-    input?.focus({ preventScroll: true });
+    practiceFocus.request();
+  }
+
+  function dismissChapterPicker() {
+    window.setTimeout(() => {
+      if (view === 'practice') focusInput();
+    }, 0);
   }
 
   function practiceButton(event: Event) {
@@ -536,12 +860,10 @@
 
   function restorePracticeTypingFocus(event: MouseEvent) {
     const control = practiceButton(event);
-    if (!control) return;
-    if (event.type === 'mousedown') {
-      event.preventDefault();
-      return;
-    }
-    if (document.activeElement === control) control.blur();
+    if (!control || control.closest('.settings-select')) return;
+    // Keep the caret in the capture field without cancelling the button click.
+    // WebKitGTK drops the click when mousedown is cancelled, so only move focus afterward.
+    if (event.type === 'mousedown') return;
     focusInput();
   }
 
@@ -590,13 +912,11 @@
   async function loadPractice() {
     try {
       if (isTauri) {
-        const [nextCatalog, nextSnapshot] = await Promise.all([
-          invoke<ContentCatalogSnapshot>('get_content_catalog'),
-          invoke<PracticeSnapshot>('get_practice_snapshot'),
-        ]);
-        catalog = nextCatalog;
-        applySnapshot(nextSnapshot, true);
+        const next = await invoke<{ catalog: ContentCatalogSnapshot; snapshot: PracticeSnapshot }>('set_practice_layout', { chapterLength, order: practiceOrder });
+        catalog = next.catalog;
+        applySnapshot(next.snapshot, true);
       } else {
+        setPreviewLayout(chapterLength, practiceOrder);
         const progress = loadWebProgress();
         catalog = previewCatalog(progress.mode, progress.sentenceId, progress.wordBookId);
         const collectionId = progress.mode === 'word' ? progress.wordBookId : progress.sentenceId;
@@ -609,6 +929,7 @@
   }
 
   function applySnapshot(next: PracticeSnapshot, resetInput: boolean) {
+    const modeChanged = practiceReady && miniWindow && next.mode !== snapshot.mode;
     snapshot = next;
     if (resetInput) {
       draft = next.practice.text;
@@ -620,6 +941,7 @@
     handleItemCompletion(next);
     speakVisibleWord(next);
     if (!isTauri) persistWebProgress(next);
+    if (modeChanged) void scheduleWindowMode(true, next.mode === 'sentence' ? sentenceMiniHeight : wordMiniHeight);
   }
 
   function syncChapterSession(next: PracticeSnapshot) {
@@ -721,7 +1043,7 @@
   }
 
   function startSpokenWord(name: string | undefined, key: string, force = false) {
-    if (!name) return;
+    if (!name || !readingAudible(sound)) return;
     if (!force && spokenKey === key && spokenState !== 'idle') return;
     spokenKey = key;
     spokenState = 'pending';
@@ -757,11 +1079,8 @@
   }
 
   async function playPronunciation(name: string | undefined): Promise<{ generation: number; started: boolean }> {
-    if (!name) return { generation: pronunciationGeneration, started: false };
-    if (sound.speechVolume <= 0) {
-      stopPronunciation();
-      return { generation: pronunciationGeneration, started: false };
-    }
+    // Checked before constructing the audio element so a mute does not request the pronunciation.
+    if (!name || !readingAudible(sound)) return { generation: pronunciationGeneration, started: false };
     const generation = ++pronunciationGeneration;
     const finishPrevious = finishPronunciation;
     finishPronunciation = undefined;
@@ -809,7 +1128,10 @@
   }
   function markSurfacePress(event: PointerEvent) {
     const origin = event.target as HTMLElement | null;
-    surfacePressed = view === 'practice' && !origin?.closest('select, button');
+    const interactive = origin?.closest('button, select, a, input, textarea, summary, [role="button"]');
+    surfacePressed = view === 'practice' && !interactive;
+    // Best-effort activation for a user press; input focus remains deferred.
+    focusWindowOnPress(appWindow);
   }
 
   function handleFocus() {
@@ -853,7 +1175,7 @@
     const stage = textDisplay.closest('.word-stage') as HTMLElement | null;
     const available = stage?.clientWidth ?? 0;
     if (available < 40) return;
-    const maxSize = 46;
+    const maxSize = miniWindow ? 42 : 46;
     const minSize = 16;
     const previousWidth = textDisplay.style.width;
     const previousMaxWidth = textDisplay.style.maxWidth;
@@ -892,12 +1214,15 @@
       if (input && input.value !== draft) input.value = draft;
       return;
     }
-    const value = (event.currentTarget as HTMLTextAreaElement).value;
+    const currentTarget = event.currentTarget as HTMLTextAreaElement;
+    const rawValue = currentTarget.value;
+    const value = composing ? rawValue : limitPracticeInput(rawValue, target);
+    if (value !== rawValue) currentTarget.value = value;
     draft = value;
     if (!composing) {
       const previous = committedDraft;
       committedDraft = value;
-      playPracticeKey(previous, value);
+      playPracticeKey(previous, value, event.timeStamp);
       void refreshCore(value, itemElapsed());
       input?.setSelectionRange(value.length, value.length);
     }
@@ -912,16 +1237,21 @@
     }
     composing = false;
     compositionText = '';
-    const value = (event.currentTarget as HTMLTextAreaElement).value;
+    const currentTarget = event.currentTarget as HTMLTextAreaElement;
+    const rawValue = currentTarget.value;
+    const value = limitPracticeInput(rawValue, target);
+    if (value !== rawValue) currentTarget.value = value;
     draft = value;
     const previous = committedDraft;
     committedDraft = value;
-    playPracticeKey(previous, value);
+    playPracticeKey(previous, value, event.timeStamp);
     void refreshCore(value, itemElapsed());
+    input?.setSelectionRange(value.length, value.length);
   }
 
   function handleKeydown(event: KeyboardEvent) {
     if (event.repeat) return;
+    if (handlePracticeNavigationKey(event)) return;
     if (event.key === 'Escape') return;
     if (event.key === 'Enter' && chapterPaused) {
       event.preventDefault();
@@ -942,6 +1272,11 @@
       const reachedEnd = snapshot.target.length > 0 && characters(committedDraft).length >= characters(snapshot.target).length;
       if (chapterPaused || !stats.done && !reachedEnd) return;
       if (snapshot.isLastItem) {
+        if (!stats.done) {
+          // Enter-with-errors at the book end still counts this item in the summary.
+          rememberCompletedItem(snapshot);
+        }
+        practicePhase = 'paused';
         chapterPaused = true;
         return;
       }
@@ -953,9 +1288,14 @@
   }
 
   async function restart(next = false) {
+    if (next && itemReachedEnd && !stats.done) {
+      // An item left through Enter-with-errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
     const keepChapterClock = !(next && snapshot.isChapterLastItem);
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     if (keepChapterClock) itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
     else resetPracticeClock();
     composing = false;
@@ -974,10 +1314,50 @@
     focusInput();
   }
 
+  async function navigateItem(direction: -1 | 1) {
+    if (direction < 0 && !canGoPreviousItem) return;
+    if (direction > 0 && (chapterPaused || !canGoNextItem)) return;
+    await selectPracticeItem(snapshot.itemIndex - 1 + direction, direction < 0);
+  }
+
+  async function selectPracticeItem(itemIndex: number, allowNextAfterLeft: boolean) {
+    if (!allowNextAfterLeft && itemReachedEnd && !stats.done) {
+      // An item skipped with errors still belongs to the chapter totals.
+      rememberCompletedItem(snapshot);
+    }
+    invalidateCompletion();
+    requestId += 1;
+    // The chapter clock keeps running across item navigation; only the per-item origin moves.
+    itemElapsedOrigin = Math.max(0, Math.round(currentElapsed()));
+    composing = false;
+    compositionText = '';
+    draft = '';
+    committedDraft = '';
+    chapterPaused = false;
+    try {
+      const nextSnapshot = isTauri
+        ? await invoke<PracticeSnapshot>('select_practice_item', { itemIndex })
+        : previewSelectItem(snapshot, itemIndex);
+      applySnapshot(nextSnapshot, true);
+      allowIncompleteNext = allowNextAfterLeft;
+    } catch (error) {
+      importError = String(error);
+    }
+    await tick();
+    focusInput();
+  }
+
+  async function navigateChapter(direction: -1 | 1) {
+    if (direction < 0 && !canGoPreviousChapter) return;
+    if (direction > 0 && !canGoNextChapter) return;
+    await selectChapter(snapshot.chapterIndex - 1 + direction);
+  }
+
   async function changeMode(mode: PracticeMode) {
     if (snapshot.mode === mode) return;
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     try {
       const nextSnapshot = isTauri
@@ -995,6 +1375,7 @@
   async function changeCollection(id: string) {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     importError = '';
     try {
@@ -1017,6 +1398,13 @@
   async function openLibrary() {
     importError = '';
     rememberSettingsScroll();
+    if (isTauri) {
+      try {
+        catalog = await invoke<ContentCatalogSnapshot>('get_content_catalog');
+      } catch (error) {
+        importError = String(error);
+      }
+    }
     libraryOpen = true;
     await restoreSettingsScroll('library');
   }
@@ -1047,10 +1435,19 @@
     }
   }
 
-  async function changeChapter(event: Event) {
-    const chapter = Number((event.currentTarget as HTMLSelectElement).value);
+  function chooseChapter(value: string) {
+    const chapter = Number(value);
+    if (chapter === snapshot.chapterIndex - 1) {
+      dismissChapterPicker();
+      return;
+    }
+    void selectChapter(chapter);
+  }
+
+  async function selectChapter(chapter: number) {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     draft = '';
     committedDraft = '';
@@ -1069,6 +1466,7 @@
   async function retryChapter() {
     invalidateCompletion();
     requestId += 1;
+    allowIncompleteNext = false;
     resetPracticeClock();
     composing = false;
     compositionText = '';
@@ -1150,8 +1548,67 @@
     importError = '';
   }
 
+  function persistMiniWindow(enabled: boolean) {
+    try { localStorage.setItem('typelet.window.mini', String(enabled)); } catch { /* browser storage may be unavailable */ }
+  }
+
+  function clampWindow(value: number, min: number, max: number) {
+    return Math.min(max, Math.max(min, Math.round(value)));
+  }
+
+  async function logicalWindowSize() {
+    if (!appWindow) return null;
+    const [size, factor] = await Promise.all([appWindow.innerSize(), appWindow.scaleFactor()]);
+    const logical = size.toLogical(factor);
+    return { width: logical.width, height: logical.height };
+  }
+
+  function scheduleWindowMode(enabled: boolean, height: number) {
+    const generation = ++windowSizeGeneration;
+    const run = windowModeQueue.catch(() => undefined).then(() => applyWindowMode(enabled, height, generation));
+    windowModeQueue = run;
+    return run;
+  }
+
+  async function applyWindowMode(enabled: boolean, height: number, generation: number) {
+    if (!appWindow || generation !== windowSizeGeneration) return;
+    try {
+      if (enabled) {
+        if (!savedWindowSize) {
+          const current = await logicalWindowSize();
+          if (generation !== windowSizeGeneration) return;
+          if (current) savedWindowSize = current;
+        }
+        const width = clampWindow(savedWindowSize?.width ?? 380, 300, 460);
+        // The normal window cannot shrink below 450 until this minimum is relaxed.
+        await appWindow.setSizeConstraints({ minWidth: 300, minHeight: 220, maxWidth: 460, maxHeight: 420 });
+        if (generation !== windowSizeGeneration) return;
+        await appWindow.setSize(new LogicalSize(width, height));
+        return;
+      }
+      const restore = savedWindowSize ?? { width: 380, height: 450 };
+      savedWindowSize = null;
+      const width = clampWindow(restore.width, 340, 460);
+      const nextHeight = clampWindow(restore.height, 450, 650);
+      await appWindow.setSizeConstraints({ minWidth: 300, minHeight: 220, maxWidth: 460, maxHeight: 650 });
+      if (generation !== windowSizeGeneration) return;
+      await appWindow.setSize(new LogicalSize(width, nextHeight));
+      if (generation !== windowSizeGeneration) return;
+      await appWindow.setSizeConstraints({ minWidth: 340, minHeight: 450, maxWidth: 460, maxHeight: 650 });
+    } catch {
+      // The compact layout still applies when the desktop window cannot be resized.
+    }
+  }
+
+  async function leaveMiniWindow() {
+    if (!miniWindow) return;
+    miniWindow = false;
+    persistMiniWindow(false);
+    await scheduleWindowMode(false, 0);
+  }
+
   async function togglePinned() {
-    if (!appWindow) return;
+    if (!appWindow || !pinSupported) return;
     const next = !pinned;
     pinGeneration += 1;
     pinned = next;
@@ -1171,14 +1628,17 @@
   async function close() { await appWindow?.close(); }
 
   async function dragWindow(event: MouseEvent) {
-    const targetElement = event.target as HTMLElement;
-    if (targetElement.closest('button, select')) return;
+    if (event.button !== 0) return;
+    const targetElement = event.target as HTMLElement | null;
+    if (targetElement?.closest('button, select, a, input, textarea')) return;
     await appWindow?.startDragging();
   }
 
   async function openSettings() {
+    if (miniWindow) await leaveMiniWindow();
     focused = false;
     libraryOpen = false;
+    shortcutsOpen = false;
     view = 'settings';
     if (!fontsLoaded) void loadFonts();
     if (!agentsLoaded) void loadAgents();
@@ -1190,6 +1650,7 @@
     rememberSettingsScroll();
     view = 'practice';
     libraryOpen = false;
+    shortcutsOpen = false;
     selectedAgent = null;
     agentDetail = null;
     agentDetailDraft = '';
@@ -1198,7 +1659,28 @@
     focusInput();
   }
 
+  async function toggleMiniWindow() {
+    if (miniWindow) {
+      await leaveMiniWindow();
+    } else {
+      if (view === 'settings') await closeSettings();
+      miniWindow = true;
+      persistMiniWindow(true);
+      await scheduleWindowMode(true, miniHeight);
+    }
+    await tick();
+    if (view === 'practice') focusInput();
+  }
+
+  function exitMiniWindow() {
+    if (miniWindow) void toggleMiniWindow();
+  }
+
   async function navigateBack() {
+    if (shortcutsOpen) {
+      await closeShortcutSettings();
+      return;
+    }
     if (selectedAgent) {
       closeAgentDetail();
       return;
@@ -1215,318 +1697,167 @@
   <title>{t.brand} · {t.subtitle}</title>
 </svelte:head>
 
-<section class="widget" role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} onpointerdown={markSurfacePress}>
-  <header class="global-nav" role="presentation" onmousedown={dragWindow}>
-    <span class="brand"><span class="brand-mark">T</span><span>{t.brand}</span></span>
-    <div class="window-actions">
-      <button class="settings-button" aria-label={t.settings} title={t.settings} aria-pressed={view === 'settings'} onclick={() => view === 'settings' ? navigateBack() : openSettings()}>
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m8 3 .5-1h3l.5 1 .5 1 1 .5 1-.5 2 2-.5 1 .5 1 1 .5 1 .5v3l-1 .5-1 .5-.5 1 .5 1-2 2-1-.5-1 .5-.5 1-.5 1h-3l-.5-1-.5-1-1-.5-1 .5-2-2 .5-1-.5-1-1-.5-1-.5v-3l1-.5 1-.5.5-1-.5-1 2-2 1 .5 1-.5.5-1Z" /><circle cx="10" cy="10" r="2.5" /></svg>
-      </button>
-      {#if isTauri}
-        <button class:pinned aria-label={pinned ? t.unpin : t.pin} title={pinned ? t.unpin : t.pin} aria-pressed={pinned} onclick={togglePinned}>
-          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l-1 6 3 3H5l3-3-1-6ZM10 12v5" /></svg>
-        </button>
-        <button aria-label={t.minimize} title={t.minimize} onclick={minimize}>−</button>
-        <button aria-label={t.close} title={t.close} onclick={close}>×</button>
-      {/if}
-    </div>
-  </header>
+<section class="widget" class:tauri={isTauri} class:mini-window={miniWindow} role="application" aria-label={t.brand} style:--practice-font={fontStack(fontPreference)} style:--mini-height="{miniHeight}px" onpointerdowncapture={markSurfacePress}>
+  {#if miniWindow}
+    <MiniToolbar {t} {isTauri} {pinned} {pinSupported} {dragWindow} {togglePinned} {minimize} {close} restoreWindow={exitMiniWindow} restoreAria={toggleMiniWindowAria} />
+  {/if}
+  {#if !miniWindow}
+  <TitleBar
+    {dragWindow}
+    {t}
+    {snapshot}
+    {view}
+    {navigateBack}
+    {openSettings}
+    {toggleMiniWindow}
+    {openSettingsAria}
+    {toggleMiniWindowAria}
+    {isTauri}
+    {pinned}
+    {pinSupported}
+    {togglePinned}
+    {minimize}
+    {close}
+  />
+  {/if}
 
   {#if view === 'settings'}
-    <main class="settings-page" bind:this={settingsPage}>
-      {#if selectedAgent}
-        <div class="settings-heading">
-          <button bind:this={backButton} class="back-button" aria-label={t.agentBack} title={t.agentBack} onclick={navigateBack}>←</button>
-          <h1>{agentDetail?.name ?? t.agentLoading}</h1>
-        </div>
-        <section class="settings-group agent-detail" aria-label={t.agentDetail}>
-          {#if agentDetailLoading}
-            <p class="agent-note">{t.agentLoading}</p>
-          {:else if agentDetail}
-            <p class="agent-note">{agentDetail.event}</p>
-            <div class="detail-meta"><span>{t.agentConfigPath}</span><code>{agentDetail.configPath || t.agentUnavailable}</code></div>
-            <div class="detail-meta"><span>{t.agentFormat}</span><code>{agentDetail.format}</code></div>
-            <p class="agent-note">{agentDetail.note}</p>
-            {#if agentDetail.editable}
-              <textarea class="agent-editor" aria-label={t.agentEditor} bind:value={agentDetailDraft} spellcheck="false"></textarea>
-              <div class="detail-actions"><button class="secondary" onclick={closeAgentDetail}>{t.cancel}</button><button class="primary" disabled={agentDetailSaving} onclick={saveAgentDetail}>{agentDetailSaving ? t.saving : t.save}</button></div>
-            {:else}
-              <p class="agent-note">{t.agentUnavailable}</p>
-            {/if}
-          {/if}
-          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
-        </section>
-      {:else if libraryOpen}
-        <div class="settings-heading">
-          <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
-          <h1>{t.library}</h1>
-        </div>
-        <p class="library-intro">{t.libraryHint}</p>
-        {#if builtinLibraries.length}
-          {#if importedLibraries.length}<h2 class="library-heading">{t.libraryBuiltin}</h2>{/if}
-          <section class="settings-group" aria-label={t.libraryBuiltin}>
-            {#each builtinLibraries as item (item.id)}
-              <div class="library-row">
-                <button class="library-main" onclick={() => selectLibrary(item.id)}>
-                  <strong>{item.title}</strong>
-                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
-                </button>
-                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
-              </div>
-            {/each}
-          </section>
-        {/if}
-        {#if importedLibraries.length}
-          <h2 class="library-heading">{t.libraryImported}</h2>
-          <section class="settings-group" aria-label={t.libraryImported}>
-            {#each importedLibraries as item (item.id)}
-              <div class="library-row">
-                <button class="library-main" onclick={() => selectLibrary(item.id)}>
-                  <strong>{item.title}</strong>
-                  <span>{item.count} {snapshot.mode === 'sentence' ? t.sentenceUnit : t.wordUnit}</span>
-                </button>
-                {#if item.selected}<span class="library-check" aria-hidden="true">✓</span>{/if}
-                <button class="library-remove" aria-label={t.removeLibrary + ' ' + item.title} onclick={() => removeLibrary(item.id)}>{t.removeLibrary}</button>
-              </div>
-            {/each}
-          </section>
-        {/if}
-        {#if isTauri}
-          <div class="detail-actions">
-            {#if snapshot.mode === 'sentence'}
-              <button class="secondary" disabled={importLoading} onclick={() => importContent('article')}>{t.importArticle}</button>
-            {:else}
-              <button class="secondary" disabled={importLoading} onclick={() => importContent('wordBook')}>{t.importWordBook}</button>
-            {/if}
-          </div>
-        {:else}
-          <p class="agent-note">{t.previewImportHint}</p>
-        {/if}
-        {#if pendingImport}
-          <div class="import-preview">
-            <strong>{pendingImport.report.title}</strong>
-            <span>{t.importPreview}: {pendingImport.report.count} · {pendingImport.report.firstItem ?? t.missing}</span>
-            {#if pendingImport.kind === 'wordBook'}<span>{t.duplicates}: {pendingImport.report.duplicateCount}</span>{/if}
-            <div class="detail-actions"><button class="secondary" onclick={cancelImport}>{t.cancel}</button><button class="primary" disabled={importLoading} onclick={() => void confirmImport()}>{t.confirmImport}</button></div>
-          </div>
-        {/if}
-        {#if importMessage}<p class="agent-note" role="status">{importMessage}</p>{/if}
-        {#if importError}<p class="agent-error" role="alert">{importError}</p>{/if}
-        {#if snapshot.mode === 'word'}
-          <p class="agent-note">{t.dictionaryNotice}</p>
-        {:else if libraries.find((item) => item.selected)?.source}
-          <p class="agent-note">{libraries.find((item) => item.selected)?.source}</p>
-        {/if}
-      {:else}
-      <div class="settings-heading">
-        <button bind:this={backButton} class="back-button" aria-label={t.back} title={t.back} onclick={navigateBack}>←</button>
-        <h1>{t.settingsTitle}</h1>
-      </div>
-
-      <section class="settings-group" aria-label={t.theme}>
-        <div class="settings-copy"><strong>{t.theme}</strong><span>{t.themeHint}</span></div>
-        <div class="segmented-control">
-          <button class:selected={themePreference === 'system'} aria-pressed={themePreference === 'system'} onclick={() => persistThemePreference('system')}>{t.system}</button>
-          <button class:selected={themePreference === 'light'} aria-pressed={themePreference === 'light'} onclick={() => persistThemePreference('light')}>{t.light}</button>
-          <button class:selected={themePreference === 'dark'} aria-pressed={themePreference === 'dark'} onclick={() => persistThemePreference('dark')}>{t.dark}</button>
-        </div>
-      </section>
-
-      <section class="settings-group" aria-label={t.interfaceLanguage}>
-        <div class="settings-copy"><strong>{t.interfaceLanguage}</strong><span>{t.languageHint}</span></div>
-        <div class="segmented-control">
-          <button class:selected={localePreference === 'system'} aria-pressed={localePreference === 'system'} onclick={() => persistLocalePreference('system')}>{t.system}</button>
-          <button class:selected={localePreference === 'zh'} aria-pressed={localePreference === 'zh'} onclick={() => persistLocalePreference('zh')}>{t.chinese}</button>
-          <button class:selected={localePreference === 'en'} aria-pressed={localePreference === 'en'} onclick={() => persistLocalePreference('en')}>{t.english}</button>
-        </div>
-      </section>
-
-      <section class="settings-group content-settings" aria-label={t.contentSettings}>
-        <div class="settings-copy"><strong>{t.practiceMode}</strong><span>{t.contentHint}</span></div>
-        <div class="segmented-control two-options" role="group" aria-label={t.practiceMode}>
-          <button class:selected={snapshot.mode === 'sentence'} aria-pressed={snapshot.mode === 'sentence'} onclick={() => changeMode('sentence')}>{t.sentenceMode}</button>
-          <button class:selected={snapshot.mode === 'word'} aria-pressed={snapshot.mode === 'word'} onclick={() => changeMode('word')}>{t.wordMode}</button>
-        </div>
-        {#if snapshot.mode === 'word'}
-          <div class="setting-block">
-            <div class="settings-copy"><strong>{t.wordPronunciation}</strong><span>{t.wordPronunciationHint}</span></div>
-            <div class="segmented-control two-options" role="group" aria-label={t.wordPronunciation}>
-              <button class:selected={pronunciationPreference === 'uk'} aria-pressed={pronunciationPreference === 'uk'} onclick={() => persistPronunciationPreference('uk')}>{t.britishPronunciation}</button>
-              <button class:selected={pronunciationPreference === 'us'} aria-pressed={pronunciationPreference === 'us'} onclick={() => persistPronunciationPreference('us')}>{t.americanPronunciation}</button>
-            </div>
-          </div>
-          <div class="setting-row">
-            <div class="settings-copy"><strong>{t.autoAdvanceWords}</strong><span>{t.autoAdvanceWordsHint}</span></div>
-            <button class="agent-switch" class:on={autoAdvanceWords} role="switch" aria-checked={autoAdvanceWords} aria-label={t.autoAdvanceWords} onclick={() => persistAutoAdvanceWords(!autoAdvanceWords)}><span></span></button>
-          </div>
-        {/if}
-        <button class="nav-row" onclick={openLibrary}>
-          <strong>{t.library}</strong>
-          <span class="nav-value">{snapshot.collectionTitle}</span>
-          <span class="chevron" aria-hidden="true">›</span>
-        </button>
-      </section>
-
-
-      <section class="settings-group" aria-label={t.soundSettings}>
-        <div class="settings-copy"><strong>{t.soundSettings}</strong><span>{t.soundSettingsHint}</span></div>
-        <div class="setting-block">
-          <label class="volume-control" style:--volume={sound.speechVolume + '%'}>
-            <span>{t.speechVolume}</span>
-            <input type="range" min="0" max="100" step="1" value={sound.speechVolume} oninput={setSpeechVolume} />
-            <span class="volume-value">{sound.speechVolume}%</span>
-          </label>
-        </div>
-        <div class="setting-row">
-          <div class="settings-copy"><strong>{t.keySound}</strong><span>{t.keySoundHint}</span></div>
-          <button type="button" class="agent-switch" class:on={sound.keyEnabled} role="switch" aria-checked={sound.keyEnabled} aria-label={t.keySound} onclick={() => setKeyEnabled(!sound.keyEnabled)}><span></span></button>
-        </div>
-        <div class="setting-block" class:is-disabled={!sound.keyEnabled}>
-          <label class="volume-control" style:--volume={sound.keyVolume + '%'}>
-            <span>{t.keyVolume}</span>
-            <input type="range" min="0" max="100" step="1" value={sound.keyVolume} disabled={!sound.keyEnabled} oninput={setKeyVolume} />
-            <span class="volume-value">{sound.keyVolume}%</span>
-          </label>
-          <label class="pack-control">
-            <span>{t.keySoundPack}</span>
-            <select class="font-select" aria-label={t.keySoundPack} disabled={!sound.keyEnabled} value={sound.pack} onchange={setKeyPack}>
-              {#each keySoundPacks as pack}
-                <option value={pack.id}>{pack.id}</option>
-              {/each}
-            </select>
-          </label>
-        </div>
-      </section>
-
-        <section class="settings-group agent-settings" aria-label={t.agents}>
-          <div class="settings-copy"><strong>{t.agents}</strong><span>{t.agentsHint}</span></div>
-          {#each agents as agent}
-            <div class="agent-row" class:unsupported={!agent.supported}>
-              <button class="agent-copy agent-open" aria-label={t.agentDetails + ': ' + agent.name} onclick={() => openAgentDetail(agent)}>
-                <strong>{agent.name}</strong><span>{agent.supported ? agent.event + ' · ' + agent.format : t.agentUnavailable}</span>
-              </button>
-              <button class="agent-switch" class:on={agent.enabled} role="switch" aria-checked={agent.enabled} aria-label={agent.name + ' ' + (agent.enabled ? t.enabled : t.disabled)} disabled={!agent.supported || agentLoading} onclick={() => toggleAgent(agent)}><span></span></button>
-            </div>
-          {/each}
-          {#if agentError}<span class="agent-error" role="status">{agentError}</span>{/if}
-        </section>
-
-      <section class="settings-group font-settings" aria-label={t.font}>
-        <div class="settings-copy"><strong>{t.font}</strong><span>{t.fontHint}</span></div>
-        <input class="font-search" type="search" aria-label={t.fontSearch} placeholder={t.fontSearch} bind:value={fontSearch} />
-        <select class="font-select" aria-label={t.font} value={fontPreference} onchange={(event) => selectFont((event.currentTarget as HTMLSelectElement).value)}>
-          <option value={bundledFont}>Noto Sans Mono · {t.builtIn}</option>
-          <option value="system">{t.systemFont}</option>
-          {#if fontPreference.startsWith('font:') && !filteredFonts.includes(fontPreference.slice(5))}
-            <option value={fontPreference}>{fontPreference.slice(5)}</option>
-          {/if}
-          <optgroup label={t.systemFonts}>
-            {#each filteredFonts as family}
-              <option value={`font:${family}`}>{family}</option>
-            {/each}
-          </optgroup>
-        </select>
-        <div class="font-sample" aria-label={t.fontSample}>Aa Bb 123 · 中文</div>
-        <div class="font-list-status">
-          <span role="status">{fontsLoading ? t.fontLoading : fontsFailed ? t.fontError : `${t.fontCount}: ${systemFonts.length}`}</span>
-          <button disabled={fontsLoading} onclick={loadFonts}>{t.refresh}</button>
-        </div>
-      </section>
-      {/if}
-    </main>
+    <SettingsPage
+      bind:settingsPage
+      {selectedAgent}
+      bind:backButton
+      {t}
+      {navigateBack}
+      {agentDetail}
+      {agentDetailLoading}
+      bind:agentDetailDraft
+      {closeAgentDetail}
+      {agentDetailSaving}
+      {saveAgentDetail}
+      {agentError}
+      {libraryOpen}
+      {builtinLibraries}
+      {importedLibraries}
+      {selectLibrary}
+      {snapshot}
+      {removeLibrary}
+      {isTauri}
+      {importLoading}
+      {importContent}
+      {pendingImport}
+      {cancelImport}
+      {confirmImport}
+      {importMessage}
+      {importError}
+      {libraries}
+      {themePreference}
+      {persistThemePreference}
+      {localePreference}
+      {persistLocalePreference}
+      {changeMode}
+      {chapterLengthMin}
+      {chapterLengthMax}
+      {effectiveChapterLength}
+      {stepChapterLength}
+      {commitChapterLength}
+      {onChapterLengthKeydown}
+      {practiceOrder}
+      {choosePracticeOrder}
+      {pronunciationPreference}
+      {persistPronunciationPreference}
+      {autoAdvanceWords}
+      {persistAutoAdvanceWords}
+      {openLibrary}
+      {sound}
+      {setSoundEnabled}
+      {setSpeechMuted}
+      {setSpeechVolume}
+      {setKeyMuted}
+      {setKeyVolume}
+      {keySoundOptions}
+      {setKeyPack}
+      {keysAudible}
+      {previewKeySound}
+      {agents}
+      {openAgentDetail}
+      {agentLoading}
+      {toggleAgent}
+      {fontDraft}
+      {fontPreference}
+      {applyFont}
+      {fontPreview}
+      bind:fontField
+      {onFontFocusOut}
+      {fontMenuOpen}
+      {fontLabel}
+      {fontQuery}
+      {openFontMenu}
+      {onFontInput}
+      {onFontKeydown}
+      {closeFontMenu}
+      {fontMenuMaxHeight}
+      {fontChoiceList}
+      bind:fontHighlight
+      {chooseFont}
+      {fontsLoading}
+      {fontsFailed}
+      {systemFonts}
+      {loadFonts}
+      {appVersion}
+      {shortcuts}
+      {shortcutsOpen}
+      {openShortcutSettings}
+      bind:shortcutEntry
+      updateShortcuts={updateShortcuts}
+      shortcutRecordingChange={setShortcutRecording}
+    />
   {:else}
-    <main class="practice-page" onmousedown={restorePracticeTypingFocus} onclick={restorePracticeTypingFocus}>
-      <section class="practice-tile">
-        <div class="passage-heading">
-          {#if !chapterPaused}
-            <div class="practice-controls">
-              <button type="button" class="icon-button" aria-label={t.restart} title={t.restart} onclick={() => void restart()}>
-                <svg viewBox="0 0 24 24" aria-hidden="true"><g transform="translate(12 12) scale(0.72) translate(-12 -12)"><path class="stroke heavy" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path class="stroke heavy" d="M3 3v5h5" /></g></svg>
-              </button>
-              <button type="button" class="icon-button" aria-label={practicePhase === 'running' ? t.pausePractice : t.startPractice} title={practicePhase === 'running' ? t.pausePractice : t.startPractice} onclick={togglePractice}>
-                {#if practicePhase === 'running'}
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9 5.4v13.2M15 5.4v13.2" /></svg>
-                {:else}
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path class="stroke" d="M9.2 5.6v12.8L18.4 12 9.2 5.6z" /></svg>
-                {/if}
-              </button>
-            </div>
-          {/if}
-          {#if snapshot.mode === 'word' || snapshot.chapterCount > 1}
-            <div class="word-navigation">
-              <span class="practice-label">{snapshot.collectionTitle}</span>
-              <select class="chapter-select" class:named={snapshot.chapterTitles.length > 0} aria-label={t.chapter} value={snapshot.chapterIndex - 1} onchange={changeChapter}>
-                {#each Array.from({ length: snapshot.chapterCount }) as _, index}
-                  <option value={index}>{snapshot.chapterTitles[index] || t.chapterPrefix + ' ' + (index + 1) + (t.chapterSuffix ? ' ' + t.chapterSuffix : '')}</option>
-                {/each}
-              </select>
-              <span class="chapter-position">{snapshot.chapterItemIndex}/{snapshot.chapterItemCount}</span>
-            </div>
-          {:else}
-            <span class="practice-label">{snapshot.collectionTitle} · {snapshot.itemIndex}/{snapshot.itemCount}</span>
-          {/if}
-        </div>
-
-
-        <label class="typing-surface" class:word-mode={snapshot.mode === 'word'} class:focused class:complete={stats.done} for="typing-capture" ondrop={(event) => event.preventDefault()} ondragover={(event) => event.preventDefault()}>
-          <div class="practice-body" class:word-stage={snapshot.mode === 'word'} class:with-gloss={snapshot.mode === 'sentence' && snapshot.translation.length > 0} class:awaiting-start={awaitingStart} class:paused={practicePhase === 'paused' && !chapterPaused}>
-            {#if chapterPaused}
-              <div class="chapter-result" role="status">
-                <p class="chapter-result-title">{chapterResultTitle}</p>
-                <p class="chapter-result-count">{chapterTotals.words} {chapterResultUnit}</p>
-              </div>
-              <div class="chapter-actions">
-                <button class="primary" disabled={snapshot.isLastItem} onclick={() => void continueAfterChapter()}>{snapshot.isLastItem ? t.bookComplete : t.nextChapter}</button>
-                <button class="chapter-retry" onclick={() => void retryChapter()}>{t.retryChapter}</button>
-              </div>
-            {:else}
-            <div class="sentence-stack">
-              <div class="word-row">
-                <div class="word-slot">
-                  <div bind:this={textDisplay} id="passage-text" class="target" class:word-target={snapshot.mode === 'word'} aria-label={t.target} style:font-size={snapshot.mode === 'word' ? wordFontSize + 'px' : undefined}>
-                {#each expected as char, index}
-                  {#if index === typed.length && compositionText}<span class="composition-preview">{compositionText}</span>{/if}<span class:correct={index < typed.length && typed[index] === char} class:incorrect={index < typed.length && typed[index] !== char} class:caret={index === typed.length && !stats.done}>{char}</span>
-                {/each}
-                {#if typed.length > expected.length}<span class="incorrect caret">{typed.slice(expected.length).join('')}</span>{/if}
-                  </div>
-                </div>
-              </div>
-              {#if snapshot.mode === 'sentence' && snapshot.translation}
-                <p class="sentence-gloss">{snapshot.translation}</p>
-              {/if}
-            </div>
-            {#if awaitingStart}
-              <p class="start-hint">{t.pressAnyKey}</p>
-            {:else if practicePhase === 'paused' && !chapterPaused}
-              <p class="start-hint">{t.pressAnyKeyContinue}</p>
-            {/if}
-            {#if snapshot.mode === 'word' && snapshot.word}
-              <div class="phonetic-row">
-                <p class="word-phonetic">{selectedPhonetic ? selectedPhoneticLabel + ' ' + selectedPhonetic : t.missing}</p>
-                <button type="button" class="speaker speaker-inline" aria-label={t.replayPronunciation} title={t.replayPronunciation} onclick={replayWord}>
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.2L12 5v14l-4.8-4.5H4v-5Z" /><path d="M16 9.2a3.8 3.8 0 0 1 0 5.6M18.4 6.8a7 7 0 0 1 0 10.4" /></svg>
-                </button>
-              </div>
-              <p class="word-translation">{snapshot.word.trans.length ? snapshot.word.trans.join('；') : t.missingTranslation}</p>
-            {/if}
-            {/if}
-          </div>
-          <textarea bind:this={input} id="typing-capture" class="typing-capture" aria-label={t.input} aria-describedby="passage-text" style:left={`${captureX}px`} style:top={`${captureY}px`} value={draft} spellcheck="false" autocapitalize="off" autocorrect="off" readonly={stats.done}
-          onfocus={handleFocus} onblur={() => focused = false}
-          onpaste={(event) => event.preventDefault()}
-          oncompositionstart={() => { composing = true; compositionText = ''; }} oncompositionupdate={(event) => compositionText = event.data}
-          oncompositionend={handleCompositionEnd} oninput={handleInput} onkeydown={handleKeydown}></textarea>
-        </label>
-      </section>
-      <progress class="practice-progress" aria-label={t.progress} value={snapshot.mode === 'word' || snapshot.chapterCount > 1 ? snapshot.chapterProgress : stats.percent} max="100"></progress>
-      <section class="summary" class:chapter-paused={chapterPaused}>
-        <div class="stats">
-          <div><strong>{displayWpm}</strong><span>{t.speed}</span></div>
-          <div><strong>{displayAccuracy}<small>%</small></strong><span>{t.accuracy}</span></div>
-          <div><strong>{formatDuration(displayElapsed)}</strong><span>{t.time}</span></div>
-        </div>
-      </section>
-    </main>
+    <PracticePage
+      {miniWindow}
+      {exitMiniWindow}
+      {restorePracticeTypingFocus}
+      {chapterPaused}
+      {t}
+      {canGoPreviousItem}
+      {navigateItem}
+      {restart}
+      {practicePhase}
+      {togglePractice}
+      {canGoNextItem}
+      {snapshot}
+      {chapterOptions}
+      {chooseChapter}
+      {dismissChapterPicker}
+      {stats}
+      {awaitingStart}
+      {chapterResultTitle}
+      {chapterTotals}
+      {chapterResultUnit}
+      {continueAfterChapter}
+      {retryChapter}
+      bind:textDisplay
+      {wordFontSize}
+      {expected}
+      {typed}
+      bind:compositionText
+      {selectedPhonetic}
+      {selectedPhoneticLabel}
+      {replayWord}
+      bind:input
+      {captureX}
+      {captureY}
+      {draft}
+      {handleFocus}
+      bind:focused
+      bind:composing
+      {handleCompositionEnd}
+      {handleInput}
+      {handleKeydown}
+      {displayWpm}
+      {displayAccuracy}
+      {formatDuration}
+      {displayElapsed}
+    />
   {/if}
   <canvas bind:this={celebrationCanvas} class="celebration" aria-hidden="true"></canvas>
 </section>

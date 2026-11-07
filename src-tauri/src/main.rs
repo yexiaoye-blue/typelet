@@ -3,15 +3,21 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{Manager, State};
 use typelet_typing::{
     parse_article, parse_word_book, ContentCatalog, ContentCatalogSnapshot, ContentError,
-    ImportReport, PracticeMode, PracticeSession, PracticeSnapshot, StoredContentState,
+    ImportReport, PracticeMode, PracticeOrder, PracticeSession, PracticeSnapshot,
+    StoredContentState,
 };
 
 mod agents;
 mod fonts;
+mod key_sound;
+mod window_platform;
+
+use key_sound::{load_key_sound, play_key_sound};
 
 struct AppState {
     content: Mutex<ContentCatalog>,
@@ -38,6 +44,12 @@ fn command_error(error: ContentError) -> String {
     error.to_string()
 }
 
+#[tauri::command]
+fn log_key_sound(app: tauri::AppHandle, line: String) -> Result<(), String> {
+    key_sound::log_frontend(&app, line);
+    Ok(())
+}
+
 fn save_content(state: &AppState) -> Result<(), String> {
     let catalog = state
         .content
@@ -51,8 +63,13 @@ fn save_content(state: &AppState) -> Result<(), String> {
     let mut stored = catalog.stored_state();
     stored.sentence_index = sentence_index;
     stored.word_index = word_index;
+    stored.positions = session.positions().clone();
     let json = serde_json::to_vec_pretty(&stored).map_err(|error| error.to_string())?;
-    fs::write(&state.storage_path, json)
+    // Write to a sibling file and rename over the target so a crash mid-save
+    // cannot leave a half-written content.json behind.
+    let temp_path = state.storage_path.with_extension("json.tmp");
+    fs::write(&temp_path, json).map_err(|error| format!("{}: {error}", temp_path.display()))?;
+    fs::rename(&temp_path, &state.storage_path)
         .map_err(|error| format!("{}: {error}", state.storage_path.display()))
 }
 
@@ -68,6 +85,18 @@ fn snapshot(state: &AppState, milliseconds: u64) -> Result<PracticeSnapshot, Str
     session
         .snapshot(&catalog, milliseconds)
         .map_err(command_error)
+}
+
+fn content_snapshot(state: &AppState) -> Result<ContentCatalogSnapshot, String> {
+    let catalog = state
+        .content
+        .lock()
+        .map_err(|_| "内容状态锁定失败".to_owned())?;
+    let session = state
+        .session
+        .lock()
+        .map_err(|_| "练习状态锁定失败".to_owned())?;
+    Ok(catalog.snapshot_with_positions(session.positions(), session.chapter_length()))
 }
 
 #[tauri::command]
@@ -125,6 +154,28 @@ fn advance_practice(state: State<'_, AppState>) -> Result<PracticeSnapshot, Stri
 }
 
 #[tauri::command]
+fn select_practice_item(
+    state: State<'_, AppState>,
+    item_index: usize,
+) -> Result<PracticeSnapshot, String> {
+    let catalog = state
+        .content
+        .lock()
+        .map_err(|_| "内容状态锁定失败".to_owned())?;
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "练习状态锁定失败".to_owned())?;
+    let current = session
+        .select_item(&catalog, item_index)
+        .map_err(command_error)?;
+    drop(session);
+    drop(catalog);
+    save_content(&state)?;
+    Ok(current)
+}
+
+#[tauri::command]
 fn select_word_chapter(
     state: State<'_, AppState>,
     chapter: usize,
@@ -148,11 +199,31 @@ fn select_word_chapter(
 
 #[tauri::command]
 fn get_content_catalog(state: State<'_, AppState>) -> Result<ContentCatalogSnapshot, String> {
+    content_snapshot(&state)
+}
+
+#[tauri::command]
+fn set_practice_layout(
+    state: State<'_, AppState>,
+    chapter_length: usize,
+    order: PracticeOrder,
+) -> Result<CatalogUpdate, String> {
     let catalog = state
         .content
         .lock()
         .map_err(|_| "内容状态锁定失败".to_owned())?;
-    Ok(catalog.snapshot())
+    let mut session = state
+        .session
+        .lock()
+        .map_err(|_| "练习状态锁定失败".to_owned())?;
+    let snapshot = session
+        .set_layout(&catalog, chapter_length, order)
+        .map_err(command_error)?;
+    let listed = catalog.snapshot_with_positions(session.positions(), session.chapter_length());
+    Ok(CatalogUpdate {
+        catalog: listed,
+        snapshot,
+    })
 }
 
 #[tauri::command]
@@ -252,9 +323,9 @@ fn import_article(state: State<'_, AppState>, path: String) -> Result<ImportResu
         .lock()
         .map_err(|_| "内容状态锁定失败".to_owned())?;
     catalog.add_article(article);
-    let catalog_snapshot = catalog.snapshot();
     drop(catalog);
     let current = snapshot(&state, 0)?;
+    let catalog_snapshot = content_snapshot(&state)?;
     save_content(&state)?;
     Ok(ImportResult {
         report,
@@ -272,9 +343,9 @@ fn import_word_book(state: State<'_, AppState>, path: String) -> Result<ImportRe
         .lock()
         .map_err(|_| "内容状态锁定失败".to_owned())?;
     catalog.add_word_book(book);
-    let catalog_snapshot = catalog.snapshot();
     drop(catalog);
     let current = snapshot(&state, 0)?;
+    let catalog_snapshot = content_snapshot(&state)?;
     save_content(&state)?;
     Ok(ImportResult {
         report,
@@ -293,9 +364,9 @@ fn remove_collection(state: &AppState, sentence: bool, id: &str) -> Result<Catal
     } else {
         catalog.remove_word_book(id).map_err(command_error)?;
     }
-    let catalog_snapshot = catalog.snapshot();
     drop(catalog);
     let current = snapshot(state, 0)?;
+    let catalog_snapshot = content_snapshot(state)?;
     save_content(state)?;
     Ok(CatalogUpdate {
         catalog: catalog_snapshot,
@@ -313,32 +384,49 @@ fn remove_word_book(state: State<'_, AppState>, id: String) -> Result<CatalogUpd
     remove_collection(&state, false, &id)
 }
 
-fn use_x11_when_gnome_ignores_pin() {
-    #[cfg(target_os = "linux")]
-    {
-        if std::env::var_os("GDK_BACKEND").is_some() {
-            return;
-        }
-        // GNOME Wayland drops gtk_window_set_keep_above, so the pin button
-        // lights up while other windows still cover Typelet. Mutter does honor
-        // _NET_WM_STATE_ABOVE for XWayland clients.
-        let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-        let xwayland_available = std::env::var_os("DISPLAY").is_some();
-        if !on_wayland || !xwayland_available {
-            return;
-        }
-        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-        let gnome = desktop
-            .split([':', ';'])
-            .any(|part| part.eq_ignore_ascii_case("GNOME"));
-        if gnome {
-            std::env::set_var("GDK_BACKEND", "x11");
+// A corrupt or unreadable content.json must not keep the app from starting:
+// park the broken file next to the real one and fall back to built-in content.
+fn load_stored_state(data_dir: &Path, storage_path: &Path) -> StoredContentState {
+    if !storage_path.is_file() {
+        return StoredContentState::default();
+    }
+    let parsed = fs::read(storage_path)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| {
+            serde_json::from_slice::<StoredContentState>(&bytes).map_err(|error| error.to_string())
+        });
+    match parsed {
+        Ok(stored) => stored,
+        Err(error) => {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0);
+            let mut backup = data_dir.join(format!("content.json.corrupt-{stamp}"));
+            let mut suffix = 0u32;
+            while backup.exists() {
+                suffix += 1;
+                backup = data_dir.join(format!("content.json.corrupt-{stamp}-{suffix}"));
+            }
+            if let Err(rename_error) = fs::rename(storage_path, &backup) {
+                eprintln!(
+                    "content.json 无法解析（{error}），且备份到 {} 失败：{rename_error}",
+                    backup.display()
+                );
+            } else {
+                eprintln!(
+                    "content.json 无法解析（{error}），已改名为 {}，使用内置内容继续",
+                    backup.display()
+                );
+            }
+            StoredContentState::default()
         }
     }
 }
 
 fn main() {
-    use_x11_when_gnome_ignores_pin();
+    // Let GTK select the session's native backend and honor explicit overrides.
+    // Forcing XWayland for pinning breaks click/focus delivery on some GNOME setups.
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -355,24 +443,33 @@ fn main() {
                 .map_err(|error| error.to_string())?;
             fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
             let storage_path = data_dir.join("content.json");
-            let stored = if storage_path.is_file() {
-                let bytes = fs::read(&storage_path).map_err(|error| error.to_string())?;
-                serde_json::from_slice::<StoredContentState>(&bytes)
-                    .map_err(|error| error.to_string())?
-            } else {
-                StoredContentState::default()
-            };
+            let stored = load_stored_state(&data_dir, &storage_path);
             let sentence_index = stored.sentence_index;
             let word_index = stored.word_index;
+            let mut positions = stored.positions.clone();
+            if let Some(id) = stored.article_id.clone() {
+                positions.insert(id, sentence_index);
+            }
+            if let Some(id) = stored.word_book_id.clone() {
+                positions.insert(id, word_index);
+            }
             let content = ContentCatalog::from_stored(stored).map_err(command_error)?;
-            let session = PracticeSession::with_stored_progress(&content, sentence_index, word_index)
-                .map_err(command_error)?;
+            let session =
+                PracticeSession::with_positions(&content, sentence_index, word_index, positions)
+                    .map_err(command_error)?;
             app.manage(AppState {
                 content: Mutex::new(content),
                 session: Mutex::new(session),
                 storage_path,
             });
+            app.manage(key_sound::KeyAudio::new());
             if let Some(window) = app.get_webview_window("main") {
+                let platform = window_platform::WindowPlatform::detect(&window)?;
+                eprintln!(
+                    "[window] backend={} pin_supported={}",
+                    platform.backend, platform.pin_supported
+                );
+                app.manage(platform);
                 let _ = window.show();
                 let _ = window.set_focus();
             }
@@ -383,8 +480,10 @@ fn main() {
             typing_snapshot,
             reset_practice,
             advance_practice,
+            select_practice_item,
             select_word_chapter,
             get_content_catalog,
+            set_practice_layout,
             select_practice_mode,
             select_article,
             select_word_book,
@@ -398,7 +497,11 @@ fn main() {
             agents::get_agents_config,
             agents::set_agent_enabled,
             agents::get_agent_detail,
-            agents::save_agent_detail
+            agents::save_agent_detail,
+            window_platform::get_window_platform,
+            log_key_sound,
+            load_key_sound,
+            play_key_sound
         ])
         .run(tauri::generate_context!())
         .expect("error while running Typelet");

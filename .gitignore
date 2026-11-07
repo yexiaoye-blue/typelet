@@ -16,3 +16,6 @@ src-tauri/gen/schemas/
 
 # Actions 构建缓存
 .ci/
+
+# Python 字节码缓存
+__pycache__/

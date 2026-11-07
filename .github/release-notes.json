@@ -1,0 +1,8 @@
+{
+  "categories": [
+    { "title": "新增", "types": ["feat", "feature"] },
+    { "title": "修复", "types": ["fix", "bugfix"] },
+    { "title": "其他", "types": ["*"] }
+  ],
+  "skipTypes": ["ci", "chore", "docs", "test", "build", "style"]
+}
